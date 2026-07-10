@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gecko-next.local/schemas/gecko-v2.schema.json",
+  "title": "Gecko JSON v2",
+  "type": "object",
+  "required": ["schemaVersion", "monologues"],
+  "properties": {
+    "schemaVersion": {
+      "const": "2.0"
+    },
+    "monologues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["speaker", "terms"],
+        "properties": {
+          "speaker": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          },
+          "start": { "type": "number", "minimum": 0 },
+          "end": { "type": "number", "minimum": 0 },
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["start", "end", "text", "type"],
+              "properties": {
+                "start": { "type": "number", "minimum": 0 },
+                "end": { "type": "number", "minimum": 0 },
+                "text": { "type": "string" },
+                "type": {
+                  "type": "string",
+                  "enum": ["WORD", "PUNCTUATION"]
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

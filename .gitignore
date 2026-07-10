@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+dist/
+outputs/
+storage/media/*
+storage/exports/*
+storage/backups/*
+!storage/media/.gitkeep
+!storage/exports/.gitkeep
+!storage/backups/.gitkeep

@@ -1,0 +1,36 @@
+{
+  "name": "gecko-next-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:smoke": "node tests/smoke.mjs",
+    "test:import": "node tests/import-edit.mjs",
+    "test:gecko-v2": "node tests/gecko-v2-real.mjs",
+    "test:ui-actions": "node tests/ui-actions.mjs",
+    "test:backend": "PYTHONPATH=backend .venv/bin/python -m pytest",
+    "backend:dev": "PYTHONPATH=backend .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
+    "db:migrate": ".venv/bin/alembic -c backend/alembic.ini upgrade head",
+    "db:seed": "PYTHONPATH=backend .venv/bin/python infra/scripts/seed_backend.py",
+    "backup": "PYTHONPATH=backend .venv/bin/python infra/scripts/backup_backend.py",
+    "restore": "PYTHONPATH=backend .venv/bin/python infra/scripts/restore_backend.py",
+    "demo:video": "node tests/demo-video.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "wavesurfer.js": "^7.12.10"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "playwright": "^1.61.1"
+  }
+}

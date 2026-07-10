@@ -1,0 +1,45 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      GECKO_NEXT_SECRET: ${GECKO_NEXT_SECRET:-change-me-in-production}
+      DATABASE_URL: postgresql+psycopg://gecko:gecko@postgres:5432/gecko_next
+    ports:
+      - "8000:8000"
+    volumes:
+      - media-data:/tmp/gecko-next-media
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: gecko_next
+      POSTGRES_USER: gecko
+      POSTGRES_PASSWORD: gecko
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gecko -d gecko_next"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  media-data:
+  postgres-data:
+

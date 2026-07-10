@@ -1,0 +1,46 @@
+{
+  "metadata": {
+    "project": "Gecko Next demo",
+    "media": "demo-audio.wav",
+    "duration": 30,
+    "source": "ASR mock"
+  },
+  "segments": [
+    {
+      "id": "sample-1",
+      "start": 0.32,
+      "end": 3.18,
+      "text": "Добрый день, это тестовое аудио по проекту TATLIN.",
+      "speaker": "SPEAKER_00",
+      "confidence": 0.92,
+      "is_crosstalk": false
+    },
+    {
+      "id": "sample-2",
+      "start": 3.42,
+      "end": 7.15,
+      "text": "Мы проверяем JSON и CSV выгрузки для ASR.",
+      "speaker": "SPEAKER_00",
+      "confidence": 0.72,
+      "is_crosstalk": false
+    },
+    {
+      "id": "sample-3",
+      "start": 7.5,
+      "end": 8.16,
+      "text": "Да.",
+      "speaker": "SPEAKER_01",
+      "confidence": 0.86,
+      "is_crosstalk": false
+    },
+    {
+      "id": "sample-4",
+      "start": 8.7,
+      "end": 13.46,
+      "text": "Второй спикер уточняет: нужен API'шный интерфейс и CI/CD.",
+      "speaker": "SPEAKER_01",
+      "confidence": 0.79,
+      "is_crosstalk": true
+    }
+  ]
+}

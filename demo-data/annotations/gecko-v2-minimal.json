@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "2.0",
+  "monologues": [
+    {
+      "speaker": {
+        "id": "speaker_1",
+        "name": null
+      },
+      "start": 0.34,
+      "end": 0.72,
+      "terms": [
+        {
+          "start": 0.34,
+          "end": 0.72,
+          "text": "Привет",
+          "type": "WORD"
+        },
+        {
+          "start": 0.72,
+          "end": 0.72,
+          "text": ".",
+          "type": "PUNCTUATION"
+        }
+      ]
+    }
+  ]
+}
