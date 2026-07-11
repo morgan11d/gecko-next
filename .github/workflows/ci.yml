@@ -12,7 +12,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
       - run: npm install
       - run: npm run build
 
@@ -26,4 +25,3 @@ jobs:
       - run: python -m pip install -r backend/requirements.txt
       - run: python -m py_compile backend/app/*.py backend/alembic/versions/*.py
       - run: python -m pytest
-
