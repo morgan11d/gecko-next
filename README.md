@@ -72,7 +72,7 @@ docker compose up --build
 
 ## Видео-демо
 
-Готовый пример работы сохранён в `outputs/gecko-next-demo.webm`. Ролик показывает полный сценарий: вход разметчика, правка сегмента, термины, отправка на проверку, вход верификатора, приёмка, экспорт и аналитика.
+Готовый пример работы сохранён в `deliverables/gecko-next-demo.webm` и локально дублируется в `outputs/gecko-next-demo.webm`. Ролик показывает актуальный полный сценарий: вход разметчика, импорт JSON, сегменты на waveform, точное `Segment`-воспроизведение, правка текста и границ, термины, отправка на проверку, вход верификатора, приёмка, экспорт, аналитика и админ-функции.
 
 Пересоздать ролик можно командой:
 
@@ -121,7 +121,7 @@ APP_URL=http://127.0.0.1:5174/ GECKO_JSON="/Users/mihail/Downloads/14.json" GECK
 ## Артефакты для защиты
 
 - `deliverables/gecko-next-defense-presentation.pptx` - отдельная русская презентация для защиты.
-- `outputs/gecko-next-demo.webm` - видео-пример работы.
+- `deliverables/gecko-next-demo.webm` - актуальное видео-демо полного сценария.
 - `outputs/gecko-next-presentation.pptx` - презентация.
 - `outputs/smoke-workspace.png` - скриншот рабочего места.
 - `outputs/gecko-v2-14-json-waveform-speakers.png` - проверочный скриншот реального `14.json` с цветами спикеров.
