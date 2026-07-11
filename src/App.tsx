@@ -204,6 +204,14 @@ function getTimelineScale(duration: number, zoom: number): number {
   return getTimelineWidth(duration, zoom) / Math.max(1, duration);
 }
 
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
 function timePixelStyle(
   startTime: number,
   endTime: number,
@@ -1373,6 +1381,7 @@ function WorkspaceView(props: {
 
         <div className="wave-shell">
           <div className="waveform-stack" style={{ width: getTimelineWidth(duration, zoom) }}>
+            <TimelineWaveform segments={state.segments} duration={duration} zoom={zoom} />
             <div ref={waveformRef} className="waveform" style={{ width: getTimelineWidth(duration, zoom) }} />
             <WaveformRegions
               segments={state.segments}
@@ -1552,6 +1561,54 @@ function WorkspaceView(props: {
         </div>
         <VersionList versions={state.versions} restoreVersion={restoreVersion} />
       </section>
+    </div>
+  );
+}
+
+function TimelineWaveform({ segments, duration, zoom }: { segments: Segment[]; duration: number; zoom: number }) {
+  const safeDuration = Math.max(duration, ...segments.map((segment) => segment.endTime), 1);
+  const scale = getTimelineScale(safeDuration, zoom);
+  const bars = segments
+    .slice()
+    .sort((a, b) => a.startTime - b.startTime)
+    .flatMap((segment) => {
+      const startPx = Math.max(0, segment.startTime * scale);
+      const widthPx = Math.max(2, (segment.endTime - segment.startTime) * scale);
+      const count = Math.max(1, Math.min(18, Math.floor(widthPx / 12)));
+      const seed = hashString(`${segment.id}:${segment.speakerId}:${segment.text}`);
+
+      return Array.from({ length: count }, (_, index) => {
+        const ratio = count === 1 ? 0.5 : index / (count - 1);
+        const envelope = Math.sin(Math.PI * Math.max(0.08, Math.min(0.92, ratio)));
+        const jitter = ((hashString(`${seed}:${index}`) % 100) / 100) * 0.45 + 0.55;
+        const height = Math.max(5, Math.min(92, 12 + envelope * jitter * 76));
+        const barWidth = Math.max(2, Math.min(5, widthPx / Math.max(1, count * 2.8)));
+        return {
+          id: `${segment.id}-${index}`,
+          left: startPx + (index + 0.5) * (widthPx / count) - barWidth / 2,
+          width: barWidth,
+          height,
+          speakerId: segment.speakerId
+        };
+      });
+    });
+
+  return (
+    <div className="waveform-synthetic" aria-hidden="true">
+      <span className="waveform-synthetic-line" />
+      {bars.map((bar) => (
+        <span
+          key={bar.id}
+          className="waveform-synthetic-bar"
+          style={{
+            ...speakerColorStyle(bar.speakerId),
+            left: `${bar.left}px`,
+            width: `${bar.width}px`,
+            height: `${bar.height}px`,
+            marginTop: `${-bar.height / 2}px`
+          }}
+        />
+      ))}
     </div>
   );
 }
