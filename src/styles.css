@@ -1261,6 +1261,16 @@ kbd {
   text-align: left;
 }
 
+.login-role.blocked {
+  color: #7e8793;
+  border-color: #e3e8ed;
+  background: #f2f5f7;
+}
+
+.login-role.blocked svg {
+  color: #9aa6b2;
+}
+
 .login-role span {
   font-weight: 900;
 }

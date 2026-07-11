@@ -82,7 +82,7 @@ const roleViews: Record<RoleName, ViewName[]> = {
   customer: ['analytics']
 };
 
-const roleOptions: RoleName[] = ['annotator', 'verifier', 'supervisor', 'admin', 'ml', 'customer'];
+const roleOptions: RoleName[] = ['annotator', 'verifier', 'supervisor', 'admin'];
 const taskStatusOptions: TaskStatus[] = ['Новая', 'Назначена', 'В работе', 'На проверке', 'На доработке', 'Исправлена', 'Принята', 'Выгружена'];
 
 function migrateState(candidate: Partial<AppState>): AppState {
@@ -90,6 +90,11 @@ function migrateState(candidate: Partial<AppState>): AppState {
   const migrated = { ...base, ...candidate } as AppState;
   return {
     ...migrated,
+    currentUserId: migrated.users.some((user) => user.id === migrated.currentUserId && user.status === 'active') ? migrated.currentUserId : null,
+    users: migrated.users.map((user) => ({
+      ...user,
+      role: roleOptions.includes(user.role) ? user.role : 'annotator'
+    })),
     versions: Array.isArray(migrated.versions) ? migrated.versions : base.versions
   };
 }
@@ -479,6 +484,10 @@ function App() {
   function login(userId: string) {
     const user = state.users.find((item) => item.id === userId);
     if (!user) return;
+    if (user.status === 'blocked') {
+      announce('Профиль заблокирован. Вход недоступен.');
+      return;
+    }
     commit(
       (previous) => {
         const nextStatus: TaskStatus = user.role === 'annotator' && previous.task.status === 'Назначена' ? 'В работе' : previous.task.status;
@@ -523,8 +532,7 @@ function App() {
     const index = state.segments.findIndex((segment) => segment.id === activeSegmentId);
     const next = state.segments[index + direction];
     if (next) {
-      setActiveSegmentId(next.id);
-      seekTo(next.startTime);
+      selectSegmentOnTimeline(next);
     }
   }
 
@@ -533,6 +541,23 @@ function App() {
     if (!ws) return;
     ws.setTime(Math.max(0, Math.min(duration, time)));
     syncVideo(time);
+  }
+
+  function scrollTimelineToSegment(segment: Segment) {
+    const waveElement = waveformRef.current;
+    const shell = waveElement?.closest('.wave-shell') as HTMLElement | null;
+    if (!shell) return;
+
+    const safeDuration = duration || state.media.duration || segment.endTime || 1;
+    const segmentCenterPx = ((segment.startTime + segment.endTime) / 2) * getTimelineScale(safeDuration, zoom);
+    const nextScrollLeft = Math.max(0, segmentCenterPx - shell.clientWidth / 2);
+    shell.scrollTo({ left: nextScrollLeft, behavior: 'smooth' });
+  }
+
+  function selectSegmentOnTimeline(segment: Segment) {
+    setActiveSegmentId(segment.id);
+    seekTo(segment.startTime);
+    scrollTimelineToSegment(segment);
   }
 
   function togglePlayback() {
@@ -827,7 +852,8 @@ function App() {
       (previous) => {
         let next: AppState = {
           ...previous,
-          users: previous.users.map((user) => (user.id === userId ? { ...user, ...patch } : user))
+          users: previous.users.map((user) => (user.id === userId ? { ...user, ...patch } : user)),
+          currentUserId: patch.status === 'blocked' && previous.currentUserId === userId ? null : previous.currentUserId
         };
         next = addAudit(next, previous.currentUserId ?? 'system', 'User', userId, 'admin_update_user', JSON.stringify(previousUser ?? {}), JSON.stringify(patch));
         return next;
@@ -1090,6 +1116,7 @@ function App() {
               togglePlayback={togglePlayback}
               playSelectedSegment={playSelectedSegment}
               seekTo={seekTo}
+              selectSegmentOnTimeline={selectSegmentOnTimeline}
               setActiveSegmentId={setActiveSegmentId}
               updateSegment={updateSegment}
               createSegment={createSegment}
@@ -1201,10 +1228,10 @@ function LoginScreen({ state, onLogin, onReset }: { state: AppState; onLogin: (u
 
         <div className="login-grid">
           {state.users.map((user) => (
-            <button key={user.id} className="login-role" onClick={() => onLogin(user.id)}>
+            <button key={user.id} className={`login-role ${user.status === 'blocked' ? 'blocked' : ''}`} disabled={user.status === 'blocked'} onClick={() => onLogin(user.id)}>
               <UserCheck {...iconSize(20)} />
               <span>{user.fullName}</span>
-              <strong>{roleTitle(user.role)}</strong>
+              <strong>{user.status === 'blocked' ? 'Заблокирован' : roleTitle(user.role)}</strong>
             </button>
           ))}
         </div>
@@ -1243,6 +1270,7 @@ function WorkspaceView(props: {
   togglePlayback: () => void;
   playSelectedSegment: () => void;
   seekTo: (time: number) => void;
+  selectSegmentOnTimeline: (segment: Segment) => void;
   setActiveSegmentId: (id: string) => void;
   updateSegment: (id: string, patch: Partial<Segment>, action?: string) => void;
   createSegment: (start?: number, end?: number) => void;
@@ -1284,6 +1312,7 @@ function WorkspaceView(props: {
     togglePlayback,
     playSelectedSegment,
     seekTo,
+    selectSegmentOnTimeline,
     setActiveSegmentId,
     updateSegment,
     createSegment,
@@ -1338,10 +1367,7 @@ function WorkspaceView(props: {
               duration={duration || state.media.duration}
               zoom={zoom}
               currentTime={currentTime}
-              onSelect={(segment) => {
-                setActiveSegmentId(segment.id);
-                seekTo(segment.startTime);
-              }}
+              onSelect={selectSegmentOnTimeline}
               onSeek={seekTo}
               onCreate={(start, end) => createSegment(start, end)}
               onResize={(segmentId, patch) => updateSegment(segmentId, patch, 'timeline_resize')}
@@ -1428,10 +1454,7 @@ function WorkspaceView(props: {
           speakers={state.speakers}
           activeId={activeSegment?.id}
           checks={checks}
-          onSelect={(segment) => {
-            setActiveSegmentId(segment.id);
-            seekTo(segment.startTime);
-          }}
+          onSelect={selectSegmentOnTimeline}
         />
       </section>
 

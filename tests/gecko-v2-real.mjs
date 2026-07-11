@@ -69,7 +69,22 @@ await page.waitForTimeout(250);
 const timelineWidthAfterZoom = await page.locator('.waveform-stack').evaluate((element) => element.getBoundingClientRect().width);
 assert(timelineWidthAfterZoom > timelineWidthBeforeZoom, `Zoom must increase timeline width: before=${timelineWidthBeforeZoom}, after=${timelineWidthAfterZoom}`);
 
-await page.locator('.waveform-region').first().click({ force: true });
+await page.locator('.wave-shell').evaluate((element) => {
+  element.scrollLeft = 0;
+});
+const farSegmentIndex = Math.min(120, expectedCount - 1);
+const farSegmentRow = page.locator('.segments-panel .segment-row').nth(farSegmentIndex);
+const farSegmentId = (await farSegmentRow.locator('.segment-id').innerText()).trim();
+await farSegmentRow.click();
+await page.waitForFunction(() => document.querySelector('.wave-shell')?.scrollLeft > 50, null, { timeout: 5000 });
+const waveScrollAfterSegmentPick = await page.locator('.wave-shell').evaluate((element) => element.scrollLeft);
+const activeRowId = (await page.locator('.segments-panel .segment-row.active .segment-id').innerText()).trim();
+assert(activeRowId === farSegmentId, `Selecting far segment must activate it: expected=${farSegmentId}, got=${activeRowId}`);
+assert(waveScrollAfterSegmentPick > 50, `Selecting far segment must scroll waveform, got scrollLeft=${waveScrollAfterSegmentPick}`);
+
+await page.locator('.segments-panel .segment-row').first().click();
+await page.waitForFunction(() => (document.querySelector('.wave-shell')?.scrollLeft ?? 9999) < 25, null, { timeout: 5000 });
+await page.locator('.waveform-region').first().click();
 const firstEndBefore = Number(await page.locator('label:has-text("End") input').inputValue());
 const endHandle = await page.locator('.waveform-region').first().locator('.waveform-resize-handle.end').boundingBox();
 assert(endHandle, 'Expected end resize handle on waveform segment');

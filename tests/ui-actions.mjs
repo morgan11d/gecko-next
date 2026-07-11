@@ -59,21 +59,28 @@ assert(await page.locator('.verification-grid .check-list').evaluate((element) =
 await page.getByRole('button', { name: /Админ/ }).click();
 await page.waitForSelector('.admin-user-row', { timeout: 15000 });
 const firstRole = page.locator('.admin-user-row').first().locator('select').first();
-await firstRole.selectOption('ml');
+await firstRole.selectOption('verifier');
 await page.locator('.admin-user-row').first().getByRole('button').click();
 await page.waitForFunction(() => {
   const saved = JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}');
-  return saved.users?.[0]?.role === 'ml' && saved.users?.[0]?.status === 'blocked';
+  return saved.users?.[0]?.role === 'verifier' && saved.users?.[0]?.status === 'blocked';
 }, null, { timeout: 5000 });
 const savedState = await page.evaluate(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}'));
-assert(savedState.users?.[0]?.role === 'ml', `Admin role change must persist, got ${savedState.users?.[0]?.role}`);
+assert(savedState.users?.[0]?.role === 'verifier', `Admin role change must persist, got ${savedState.users?.[0]?.role}`);
 assert(savedState.users?.[0]?.status === 'blocked', `Admin status toggle must persist, got ${savedState.users?.[0]?.status}`);
+const availableRoles = await firstRole.locator('option').evaluateAll((options) => options.map((option) => option.value));
+assert(!availableRoles.includes('ml') && !availableRoles.includes('customer'), `Removed roles must not be available, got ${availableRoles.join(',')}`);
 
 await page.getByPlaceholder('Новое правило проекта').fill('Smoke rule for admin');
 await page.getByRole('button', { name: /^Добавить$/ }).last().click();
 await page.waitForFunction(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}').project?.rules?.[0] === 'Smoke rule for admin', null, { timeout: 5000 });
 const savedWithRule = await page.evaluate(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}'));
 assert(savedWithRule.project?.rules?.[0] === 'Smoke rule for admin', 'Admin rule add must persist');
+
+await page.getByRole('button', { name: /Выйти/ }).click();
+const blockedLogin = page.getByRole('button', { name: /Анна Разметчик.*Заблокирован/ });
+await blockedLogin.waitFor({ timeout: 5000 });
+assert(await blockedLogin.isDisabled(), 'Blocked user login card must be disabled');
 
 await browser.close();
 console.log('UI actions test passed: terms, verifier picker, scroll lists and admin controls work');
