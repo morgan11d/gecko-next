@@ -42,11 +42,12 @@ const sourceDuration = Math.max(
 );
 const rowCount = await page.locator('.segment-row').count();
 const waveformRegions = await page.locator('.waveform-region').count();
-const syntheticBars = await page.locator('.waveform-synthetic-bar').count();
 assert(rowCount === expectedCount, `Expected ${expectedCount} rows from Gecko v2, got ${rowCount}`);
 assert(waveformRegions === expectedCount, `Expected ${expectedCount} waveform regions, got ${waveformRegions}`);
-assert(syntheticBars > expectedCount, `Expected full-length synthetic waveform bars, got ${syntheticBars}`);
 assert((await page.locator('.segment-rail').count()) === 0, 'Lower segment rail must be removed');
+assert((await page.locator('.waveform-synthetic-bar').count()) === 0, 'Synthetic waveform overlay must be removed');
+const waveSurferCanvasCount = await page.locator('.waveform').evaluate((element) => element.firstElementChild?.shadowRoot?.querySelectorAll('canvas').length ?? 0);
+assert(waveSurferCanvasCount > 0, 'WaveSurfer must render its own canvas waveform');
 
 const sourceSpeakers = new Set(
   source.monologues.map((monologue) => monologue.speaker?.id ?? monologue.speaker?.name ?? 'unknown')
@@ -63,8 +64,6 @@ assert(visibleSpeakerBadges.length >= 2, `Expected multiple segment-table speake
 
 const timelineWidthBeforeZoom = await page.locator('.waveform-stack').evaluate((element) => element.getBoundingClientRect().width);
 assert(timelineWidthBeforeZoom >= sourceDuration * 45, `Timeline must cover full Gecko duration before zoom: width=${timelineWidthBeforeZoom}, sourceDuration=${sourceDuration}`);
-const finalSyntheticBarLeft = await page.locator('.waveform-synthetic-bar').last().evaluate((element) => element.getBoundingClientRect().left - document.querySelector('.waveform-stack').getBoundingClientRect().left);
-assert(finalSyntheticBarLeft > timelineWidthBeforeZoom * 0.86, `Visible waveform must continue near the end of the timeline: lastBar=${finalSyntheticBarLeft}, width=${timelineWidthBeforeZoom}`);
 const zoomSlider = page.locator('label:has-text("Масштаб") input[type="range"]');
 await zoomSlider.focus();
 for (let index = 0; index < 20; index += 1) {

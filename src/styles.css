@@ -444,29 +444,6 @@ label span {
   min-height: 146px;
 }
 
-.waveform-synthetic {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-
-.waveform-synthetic-line {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  border-top: 1px dashed rgba(22, 143, 134, 0.58);
-}
-
-.waveform-synthetic-bar {
-  position: absolute;
-  top: 50%;
-  min-width: 2px;
-  border-radius: 999px;
-  background: var(--teal);
-  opacity: 0.5;
-}
-
 .waveform-regions {
   position: absolute;
   inset: 0;

@@ -200,16 +200,43 @@ function getSegmentsDuration(segments: Segment[]): number {
   return Math.max(0, ...segments.map((segment) => segment.endTime));
 }
 
-function getTimelineScale(duration: number, zoom: number): number {
-  return getTimelineWidth(duration, zoom) / Math.max(1, duration);
-}
-
 function hashString(value: string): number {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash;
+}
+
+function buildTimelinePeaks(segments: Segment[], duration: number): number[][] | undefined {
+  const safeDuration = Math.max(duration, getSegmentsDuration(segments), 1);
+  if (segments.length === 0 || safeDuration <= 1) return undefined;
+
+  const samplesPerSecond = 24;
+  const length = Math.min(120000, Math.max(8000, Math.ceil(safeDuration * samplesPerSecond)));
+  const peaks = new Array<number>(length).fill(0);
+
+  segments.forEach((segment) => {
+    const start = Math.max(0, Math.floor((segment.startTime / safeDuration) * length));
+    const end = Math.min(length - 1, Math.ceil((segment.endTime / safeDuration) * length));
+    const span = Math.max(1, end - start);
+    const seed = hashString(`${segment.id}:${segment.speakerId}:${segment.text}`);
+
+    for (let index = start; index <= end; index += 1) {
+      const local = (index - start) / span;
+      const envelope = Math.sin(Math.PI * Math.max(0.06, Math.min(0.94, local)));
+      const jitter = 0.52 + ((hashString(`${seed}:${index}`) % 100) / 100) * 0.48;
+      const confidence = Number.isFinite(segment.confidence) ? Math.max(0.45, Math.min(1, segment.confidence)) : 0.72;
+      const value = Math.max(0.03, Math.min(0.96, (0.12 + envelope * 0.82) * jitter * confidence));
+      peaks[index] = Math.max(peaks[index], value);
+    }
+  });
+
+  return [peaks];
+}
+
+function getTimelineScale(duration: number, zoom: number): number {
+  return getTimelineWidth(duration, zoom) / Math.max(1, duration);
 }
 
 function timePixelStyle(
@@ -334,7 +361,6 @@ function App() {
       return;
     }
 
-    const visualDuration = Math.max(1, stateRef.current.media.duration || 0, getSegmentsDuration(stateRef.current.segments));
     const ws = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: '#aab8c7',
@@ -346,12 +372,13 @@ function App() {
       barGap: 2,
       barRadius: 2,
       normalize: true,
-      minPxPerSec: zoom,
-      duration: visualDuration
+      minPxPerSec: zoom
     });
 
     wavesurferRef.current = ws;
-    void ws.load(audioUrl).catch(() => undefined);
+    const peakDuration = Math.max(stateRef.current.media.duration, getSegmentsDuration(stateRef.current.segments), 1);
+    const timelinePeaks = buildTimelinePeaks(stateRef.current.segments, peakDuration);
+    void ws.load(audioUrl, timelinePeaks, timelinePeaks ? peakDuration : undefined).catch(() => undefined);
     ws.on('ready', () => {
       const loadedDuration = ws.getDuration();
       setDuration((previous) => Math.max(previous, loadedDuration));
@@ -1381,7 +1408,6 @@ function WorkspaceView(props: {
 
         <div className="wave-shell">
           <div className="waveform-stack" style={{ width: getTimelineWidth(duration, zoom) }}>
-            <TimelineWaveform segments={state.segments} duration={duration} zoom={zoom} />
             <div ref={waveformRef} className="waveform" style={{ width: getTimelineWidth(duration, zoom) }} />
             <WaveformRegions
               segments={state.segments}
@@ -1561,66 +1587,6 @@ function WorkspaceView(props: {
         </div>
         <VersionList versions={state.versions} restoreVersion={restoreVersion} />
       </section>
-    </div>
-  );
-}
-
-function TimelineWaveform({
-  segments,
-  duration,
-  zoom
-}: {
-  segments: Segment[];
-  duration: number;
-  zoom: number;
-}) {
-  const safeDuration = Math.max(duration, ...segments.map((segment) => segment.endTime), 1);
-  const syntheticStart = 0;
-  const scale = getTimelineScale(safeDuration, zoom);
-  const bars = segments
-    .slice()
-    .sort((a, b) => a.startTime - b.startTime)
-    .flatMap((segment) => {
-      const segmentStart = Math.max(segment.startTime, syntheticStart);
-      if (segment.endTime <= segmentStart) return [];
-
-      const startPx = Math.max(0, segmentStart * scale);
-      const widthPx = Math.max(2, (segment.endTime - segmentStart) * scale);
-      const count = Math.max(1, Math.min(24, Math.floor(widthPx / 10)));
-      const seed = hashString(`${segment.id}:${segment.speakerId}:${segment.text}`);
-
-      return Array.from({ length: count }, (_, index) => {
-        const ratio = count === 1 ? 0.5 : index / (count - 1);
-        const envelope = Math.sin(Math.PI * Math.max(0.08, Math.min(0.92, ratio)));
-        const jitter = ((hashString(`${seed}:${index}`) % 100) / 100) * 0.38 + 0.62;
-        const height = Math.max(4, Math.min(76, 8 + envelope * jitter * 60));
-        const barWidth = Math.max(1.5, Math.min(3, widthPx / Math.max(1, count * 3.4)));
-        return {
-          id: `${segment.id}-${index}`,
-          left: startPx + (index + 0.5) * (widthPx / count) - barWidth / 2,
-          width: barWidth,
-          height
-        };
-      });
-    });
-
-  if (bars.length === 0) return null;
-
-  return (
-    <div className="waveform-synthetic" aria-hidden="true">
-      <span className="waveform-synthetic-line" />
-      {bars.map((bar) => (
-        <span
-          key={bar.id}
-          className="waveform-synthetic-bar"
-          style={{
-            left: `${bar.left}px`,
-            width: `${bar.width}px`,
-            height: `${bar.height}px`,
-            marginTop: `${-bar.height / 2}px`
-          }}
-        />
-      ))}
     </div>
   );
 }
