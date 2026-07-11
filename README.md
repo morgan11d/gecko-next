@@ -120,6 +120,7 @@ APP_URL=http://127.0.0.1:5174/ GECKO_JSON="/Users/mihail/Downloads/14.json" GECK
 
 ## Артефакты для защиты
 
+- `deliverables/gecko-next-defense-presentation.pptx` - отдельная русская презентация для защиты.
 - `outputs/gecko-next-demo.webm` - видео-пример работы.
 - `outputs/gecko-next-presentation.pptx` - презентация.
 - `outputs/smoke-workspace.png` - скриншот рабочего места.

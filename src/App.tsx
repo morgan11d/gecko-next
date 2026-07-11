@@ -1668,28 +1668,26 @@ function WaveformRegions({
 
     const originalStart = segment.startTime;
     const originalEnd = segment.endTime;
-    setResizeDraft({ segmentId: segment.id, start: originalStart, end: originalEnd });
+    let latestDraft = { segmentId: segment.id, start: originalStart, end: originalEnd };
+    setResizeDraft(latestDraft);
 
     const handleMove = (moveEvent: PointerEvent) => {
       const pointerTime = timeFromPointer(moveEvent, target, safeDuration, zoom);
       const nextStart = edge === 'start' ? Math.min(pointerTime, originalEnd - 0.05) : originalStart;
       const nextEnd = edge === 'end' ? Math.max(pointerTime, originalStart + 0.05) : originalEnd;
-      setResizeDraft({
+      latestDraft = {
         segmentId: segment.id,
         start: seconds(Math.max(0, nextStart)),
         end: seconds(Math.min(safeDuration, nextEnd))
-      });
+      };
+      setResizeDraft(latestDraft);
     };
 
     const finish = () => {
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', finish);
-      setResizeDraft((current) => {
-        if (current?.segmentId === segment.id) {
-          onResize(segment.id, { startTime: current.start, endTime: current.end });
-        }
-        return null;
-      });
+      onResize(segment.id, { startTime: latestDraft.start, endTime: latestDraft.end });
+      setResizeDraft(null);
     };
 
     window.addEventListener('pointermove', handleMove);
