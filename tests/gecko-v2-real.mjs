@@ -60,6 +60,7 @@ assert(visibleRegionColors.length >= 2, `Expected multiple waveform speaker colo
 assert(visibleSpeakerBadges.length >= 2, `Expected multiple segment-table speaker colors, got ${visibleSpeakerBadges.length}`);
 
 const timelineWidthBeforeZoom = await page.locator('.waveform-stack').evaluate((element) => element.getBoundingClientRect().width);
+assert(timelineWidthBeforeZoom >= sourceDuration * 45, `Timeline must cover full Gecko duration before zoom: width=${timelineWidthBeforeZoom}, sourceDuration=${sourceDuration}`);
 const zoomSlider = page.locator('label:has-text("Масштаб") input[type="range"]');
 await zoomSlider.focus();
 for (let index = 0; index < 20; index += 1) {

@@ -196,6 +196,10 @@ function getTimelineWidth(duration: number, zoom: number): number {
   return Math.max(720, Math.ceil(safeDuration * Math.max(30, zoom)));
 }
 
+function getSegmentsDuration(segments: Segment[]): number {
+  return Math.max(0, ...segments.map((segment) => segment.endTime));
+}
+
 function getTimelineScale(duration: number, zoom: number): number {
   return getTimelineWidth(duration, zoom) / Math.max(1, duration);
 }
@@ -264,6 +268,10 @@ function App() {
   const checks = useMemo(() => computeQuality(state, saveState === 'dirty' || saveState === 'saving'), [saveState, state]);
   const aiHints = useMemo(() => buildAiHints(state), [state]);
   const stats = useMemo(() => analytics(state), [state]);
+  const timelineDuration = useMemo(
+    () => Math.max(1, duration || 0, state.media.duration || 0, getSegmentsDuration(state.segments)),
+    [duration, state.media.duration, state.segments]
+  );
 
   const commit = useCallback(
     (updater: (previous: AppState) => AppState, track = true) => {
@@ -318,6 +326,7 @@ function App() {
       return;
     }
 
+    const visualDuration = Math.max(1, stateRef.current.media.duration || 0, getSegmentsDuration(stateRef.current.segments));
     const ws = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: '#aab8c7',
@@ -329,21 +338,25 @@ function App() {
       barGap: 2,
       barRadius: 2,
       normalize: true,
-      minPxPerSec: zoom
+      minPxPerSec: zoom,
+      duration: visualDuration
     });
 
     wavesurferRef.current = ws;
     void ws.load(audioUrl).catch(() => undefined);
     ws.on('ready', () => {
       const loadedDuration = ws.getDuration();
-      setDuration(loadedDuration);
-      commit(
-        (previous) => ({
-          ...previous,
-          media: { ...previous.media, duration: seconds(loadedDuration) }
-        }),
-        false
-      );
+      setDuration((previous) => Math.max(previous, loadedDuration));
+      const currentMediaDuration = stateRef.current.media.duration;
+      if (loadedDuration > currentMediaDuration) {
+        commit(
+          (previous) => ({
+            ...previous,
+            media: { ...previous.media, duration: seconds(Math.max(previous.media.duration, loadedDuration, getSegmentsDuration(previous.segments))) }
+          }),
+          false
+        );
+      }
     });
     ws.on('timeupdate', (time) => setCurrentTime(time));
     ws.on('interaction', () => {
@@ -372,7 +385,7 @@ function App() {
       }
       wavesurferRef.current = null;
     };
-  }, [activeView, audioUrl, currentUser?.id]);
+  }, [activeView, audioUrl, currentUser?.id, state.media.duration]);
 
   useEffect(() => {
     if (activeSegment && activeSegment.id !== activeSegmentId) setActiveSegmentId(activeSegment.id);
@@ -539,7 +552,7 @@ function App() {
   function seekTo(time: number) {
     const ws = wavesurferRef.current;
     if (!ws) return;
-    ws.setTime(Math.max(0, Math.min(duration, time)));
+    ws.setTime(Math.max(0, Math.min(timelineDuration, time)));
     syncVideo(time);
   }
 
@@ -548,7 +561,7 @@ function App() {
     const shell = waveElement?.closest('.wave-shell') as HTMLElement | null;
     if (!shell) return;
 
-    const safeDuration = duration || state.media.duration || segment.endTime || 1;
+    const safeDuration = timelineDuration || segment.endTime || 1;
     const segmentCenterPx = ((segment.startTime + segment.endTime) / 2) * getTimelineScale(safeDuration, zoom);
     const nextScrollLeft = Math.max(0, segmentCenterPx - shell.clientWidth / 2);
     shell.scrollTo({ left: nextScrollLeft, behavior: 'smooth' });
@@ -575,7 +588,7 @@ function App() {
     if (!ws && !audio) return;
 
     const start = Math.max(0, seconds(activeSegment.startTime));
-    const playerDuration = ws?.getDuration() || audio?.duration || duration || state.media.duration || activeSegment.endTime;
+    const playerDuration = Math.max(ws?.getDuration() || 0, audio?.duration || 0, timelineDuration || 0, activeSegment.endTime);
     const end = Math.min(playerDuration || activeSegment.endTime, seconds(activeSegment.endTime));
     if (end <= start) return;
 
@@ -648,7 +661,7 @@ function App() {
   }
 
   function createSegment(startOverride?: number, endOverride?: number) {
-    const mediaDuration = duration || state.media.duration || 9999;
+    const mediaDuration = timelineDuration || 9999;
     const start = Math.max(0, Math.min(mediaDuration, startOverride ?? (activeSegment ? activeSegment.endTime + 0.12 : currentTime)));
     const end = Math.max(start + 0.05, Math.min(mediaDuration, endOverride ?? start + 2.2));
     const id = `seg-${Date.now().toString(36)}`;
@@ -1034,7 +1047,7 @@ function App() {
           </Badge>
           <Badge tone="neutral">
             <Clock3 {...iconSize(14)} />
-            {formatTime(currentTime)} / {formatTime(duration)}
+            {formatTime(currentTime)} / {formatTime(timelineDuration)}
           </Badge>
         </div>
 
@@ -1106,7 +1119,7 @@ function App() {
               postRoll={postRoll}
               loopSegment={loopSegment}
               isPlaying={isPlaying}
-              duration={duration}
+              duration={timelineDuration}
               currentTime={currentTime}
               setZoom={setZoom}
               setSpeed={setSpeed}
@@ -1359,12 +1372,12 @@ function WorkspaceView(props: {
         </div>
 
         <div className="wave-shell">
-          <div className="waveform-stack" style={{ width: getTimelineWidth(duration || state.media.duration, zoom) }}>
-            <div ref={waveformRef} className="waveform" style={{ width: getTimelineWidth(duration || state.media.duration, zoom) }} />
+          <div className="waveform-stack" style={{ width: getTimelineWidth(duration, zoom) }}>
+            <div ref={waveformRef} className="waveform" style={{ width: getTimelineWidth(duration, zoom) }} />
             <WaveformRegions
               segments={state.segments}
               activeId={activeSegment?.id}
-              duration={duration || state.media.duration}
+              duration={duration}
               zoom={zoom}
               currentTime={currentTime}
               onSelect={selectSegmentOnTimeline}
