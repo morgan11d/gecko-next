@@ -447,15 +447,14 @@ label span {
 .waveform-synthetic {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
 }
 
 .waveform-synthetic-line {
   position: absolute;
   top: 50%;
-  left: 0;
-  width: 100%;
+  right: 0;
   border-top: 1px dashed rgba(22, 143, 134, 0.58);
 }
 
@@ -464,8 +463,8 @@ label span {
   top: 50%;
   min-width: 2px;
   border-radius: 999px;
-  background: var(--speaker-color);
-  opacity: 0.78;
+  background: var(--teal);
+  opacity: 0.5;
 }
 
 .waveform-regions {
@@ -512,7 +511,7 @@ label span {
 .waveform-region.active {
   z-index: 5;
   border-color: var(--speaker-color);
-  background: var(--speaker-soft);
+  background: var(--speaker-bg);
   box-shadow:
     0 0 0 2px rgba(22, 143, 134, 0.16),
     inset 0 0 0 1px var(--speaker-color);
@@ -536,29 +535,33 @@ label span {
 
 .waveform-resize-handle {
   position: absolute;
-  top: -3px;
-  bottom: -3px;
+  top: -1px;
+  bottom: -1px;
   z-index: 4;
-  width: 10px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.82);
+  width: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
   opacity: 0;
   cursor: ew-resize;
 }
 
 .waveform-resize-handle.start {
-  left: -5px;
-  border-left: 3px solid var(--speaker-color);
+  left: -3px;
+  border-left: 2px solid var(--speaker-color);
 }
 
 .waveform-resize-handle.end {
-  right: -5px;
-  border-right: 3px solid var(--speaker-color);
+  right: -3px;
+  border-right: 2px solid var(--speaker-color);
+}
+
+.waveform-region.active .waveform-resize-handle {
+  opacity: 0.45;
 }
 
 .waveform-region:hover .waveform-resize-handle,
-.waveform-region.active .waveform-resize-handle {
-  opacity: 1;
+.waveform-region.active:hover .waveform-resize-handle {
+  opacity: 0.9;
 }
 
 .waveform-region-grip {
