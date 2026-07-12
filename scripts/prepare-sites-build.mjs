@@ -1,14 +1,20 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const root = process.cwd();
 const distDir = path.join(root, 'dist');
 const serverDir = path.join(distDir, 'server');
 const openaiDir = path.join(distDir, '.openai');
+const hostingConfig = path.join(root, '.openai', 'hosting.json');
 
 await mkdir(serverDir, { recursive: true });
-await mkdir(openaiDir, { recursive: true });
-await copyFile(path.join(root, '.openai', 'hosting.json'), path.join(openaiDir, 'hosting.json'));
+try {
+  await access(hostingConfig);
+  await mkdir(openaiDir, { recursive: true });
+  await copyFile(hostingConfig, path.join(openaiDir, 'hosting.json'));
+} catch {
+  // GitHub Pages builds do not need Codex Sites metadata.
+}
 
 await writeFile(
   path.join(serverDir, 'index.js'),
