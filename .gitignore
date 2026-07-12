@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 dist/
 outputs/
+work/
 storage/media/*
 storage/exports/*
 storage/backups/*

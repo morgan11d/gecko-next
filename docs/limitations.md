@@ -1,15 +1,15 @@
-# Limitations
+# Список известных ограничений
 
-## Production Gaps
+## Ограничения MVP
 
-- Backend API is implemented and tested, but runtime persistence currently uses an in-memory repository. PostgreSQL service, Alembic schema and Docker Compose are present; the remaining production step is a SQLAlchemy repository implementation.
-- Waveform peaks endpoint is deterministic and cached-shaped for demo use. Production extraction via ffmpeg/PCM aggregation is planned.
-- AI assistant is an explicit deterministic mock, not an external ML model.
-- Frontend still performs the main demo workflow autonomously through local state/localStorage; API integration points are implemented but not fully wired into every UI action.
+- Backend API реализован и покрыт тестами, но демонстрационное runtime-хранилище работает in-memory. PostgreSQL, Alembic migration и Docker Compose уже приложены.
+- AI-помощник работает как deterministic mock по правилам, без подключения внешней LLM или ASR-модели.
+- Основной пользовательский сценарий во frontend сохраняется через localStorage; API-контракты готовы, но не все UI-действия полностью переведены на backend.
+- Production-генерация waveform peaks через ffmpeg/PCM агрегацию запланирована отдельно.
+- Нет многопользовательской синхронизации в реальном времени.
 
-## Why This Is Acceptable For Demo
+## Почему это допустимо для MVP
 
-- The required user-facing flow works with real `14.mp4` and `14.json`.
-- Gecko v2 real-file round-trip is tested in both browser and backend.
-- Docker, backend API, PostgreSQL migration and acceptance evidence are included for judging architecture and further implementation.
-
+- Главный сценарий ТЗ работает: импорт, разметка, проверка, возврат/приёмка, экспорт.
+- Gecko v2 round-trip проверяется браузерным тестом и backend-тестом.
+- Архитектура, API, схема БД и план развития показывают путь к production-версии.
