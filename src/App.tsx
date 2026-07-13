@@ -86,6 +86,11 @@ type AiAudioResult = {
 type AiModelStatus = 'idle' | 'loading' | 'ready' | 'error';
 type WhisperTranscriber = (audio: Float32Array, options?: Record<string, unknown>) => Promise<string | { text?: string }>;
 type DecodedAudioCache = { url: string; sampleRate: number; samples: Float32Array };
+type SegmentAudioSource = 'decoded-file' | 'recorded-media';
+type CaptureMediaElement = HTMLMediaElement & {
+  captureStream?: () => MediaStream;
+  mozCaptureStream?: () => MediaStream;
+};
 type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
 
 const roleViews: Record<RoleName, ViewName[]> = {
@@ -334,6 +339,35 @@ function resampleAudio(samples: Float32Array, fromRate: number, toRate: number):
     next[index] = samples[left] * (1 - weight) + samples[right] * weight;
   }
   return next;
+}
+
+function waitForMediaEvent(element: HTMLMediaElement, eventName: string, timeout = 8000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(`Media event timeout: ${eventName}`));
+    }, timeout);
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      element.removeEventListener(eventName, handleEvent);
+      element.removeEventListener('error', handleError);
+    };
+    const handleEvent = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error('Media element cannot play or decode this file'));
+    };
+    element.addEventListener(eventName, handleEvent, { once: true });
+    element.addEventListener('error', handleError, { once: true });
+  });
+}
+
+function getRecorderMimeType(): string {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'video/webm;codecs=opus', 'video/webm'];
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? '';
 }
 
 function App() {
@@ -808,17 +842,118 @@ function App() {
     }
   }
 
-  async function getSegmentAudioSamples(segment: Segment): Promise<Float32Array> {
-    const decoded = await getDecodedAudio();
+  async function decodeAudioBlob(blob: Blob): Promise<DecodedAudioCache> {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new AudioContext();
+    try {
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      return {
+        url: `recorded-${Date.now()}`,
+        sampleRate: audioBuffer.sampleRate,
+        samples: mixToMono(audioBuffer)
+      };
+    } finally {
+      void audioContext.close();
+    }
+  }
+
+  async function recordSegmentAudio(segment: Segment): Promise<DecodedAudioCache> {
+    if (!audioUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
+    if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder недоступен в этом браузере');
+
+    const isVideoSource = Boolean(videoUrl && audioUrl === videoUrl);
+    const element = document.createElement(isVideoSource ? 'video' : 'audio') as CaptureMediaElement;
+    element.src = audioUrl;
+    element.preload = 'auto';
+    if (element instanceof HTMLVideoElement) element.playsInline = true;
+    element.muted = true;
+    element.volume = 0;
+    element.style.position = 'fixed';
+    element.style.left = '-9999px';
+    element.style.width = '1px';
+    element.style.height = '1px';
+    document.body.appendChild(element);
+
+    try {
+      if (element.readyState < 1) await waitForMediaEvent(element, 'loadedmetadata');
+      element.currentTime = Math.max(0, segment.startTime);
+      await waitForMediaEvent(element, 'seeked');
+
+      const audioContext = new AudioContext();
+      let stream: MediaStream | null = null;
+      try {
+        const source = audioContext.createMediaElementSource(element);
+        const destination = audioContext.createMediaStreamDestination();
+        const silentGain = audioContext.createGain();
+        silentGain.gain.value = 0;
+        source.connect(destination);
+        source.connect(silentGain);
+        silentGain.connect(audioContext.destination);
+        await audioContext.resume();
+        stream = destination.stream;
+      } catch {
+        const captureElement = element as CaptureMediaElement;
+        stream = captureElement.captureStream?.() ?? captureElement.mozCaptureStream?.() ?? null;
+      }
+      if (!stream) {
+        void audioContext.close();
+        throw new Error('Браузер не умеет извлекать аудио из video/audio элемента');
+      }
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        void audioContext.close();
+        throw new Error('В медиафайле не найдена аудиодорожка');
+      }
+
+      const chunks: Blob[] = [];
+      const mimeType = getRecorderMimeType();
+      const recorder = new MediaRecorder(new MediaStream(audioTracks), mimeType ? { mimeType } : undefined);
+      const stopped = new Promise<Blob>((resolve, reject) => {
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+        };
+        recorder.onerror = () => reject(new Error('Не удалось записать аудиофрагмент для Whisper'));
+        recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }));
+      });
+
+      recorder.start(80);
+      await element.play();
+      const durationMs = Math.max(300, Math.min(30000, (segment.endTime - segment.startTime) * 1000 + 180));
+      await new Promise((resolve) => window.setTimeout(resolve, durationMs));
+      recorder.stop();
+      element.pause();
+      stream.getTracks().forEach((track) => track.stop());
+      const decoded = await decodeAudioBlob(await stopped);
+      void audioContext.close();
+      return decoded;
+    } finally {
+      element.pause();
+      element.removeAttribute('src');
+      element.load();
+      element.remove();
+    }
+  }
+
+  async function getSegmentAudioSamples(segment: Segment): Promise<{ samples: Float32Array; source: SegmentAudioSource }> {
+    let decoded: DecodedAudioCache;
+    let source: SegmentAudioSource = 'decoded-file';
+    try {
+      decoded = await getDecodedAudio();
+    } catch {
+      decoded = await recordSegmentAudio(segment);
+      source = 'recorded-media';
+    }
     const startIndex = Math.max(0, Math.floor(segment.startTime * decoded.sampleRate));
     const endIndex = Math.min(decoded.samples.length, Math.ceil(segment.endTime * decoded.sampleRate));
-    const segmentSamples = decoded.samples.slice(startIndex, Math.max(startIndex + 1, endIndex));
-    return resampleAudio(segmentSamples, decoded.sampleRate, 16000);
+    const segmentSamples = source === 'decoded-file'
+      ? decoded.samples.slice(startIndex, Math.max(startIndex + 1, endIndex))
+      : decoded.samples;
+    return { samples: resampleAudio(segmentSamples, decoded.sampleRate, 16000), source };
   }
 
   async function transcribeSegmentWithWhisper(segment: Segment): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
     const transcriber = await getWhisperTranscriber();
-    const samples = await getSegmentAudioSamples(segment);
+    const { samples, source } = await getSegmentAudioSamples(segment);
     const result = await transcriber(samples, {
       language: 'russian',
       task: 'transcribe',
@@ -829,7 +964,9 @@ function App() {
     return {
       transcript: text.trim(),
       engine: 'whisper-browser',
-      detail: 'Текст распознан из аудио сегмента моделью Whisper в браузере.'
+      detail: source === 'recorded-media'
+        ? 'Текст распознан Whisper из записанного аудиофрагмента видео/медиа.'
+        : 'Текст распознан Whisper из аудио сегмента в браузере.'
     };
   }
 
