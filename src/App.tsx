@@ -404,6 +404,8 @@ function App() {
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioFileRef = useRef<File | null>(null);
+  const videoFileRef = useRef<File | null>(null);
   const playTargetRef = useRef<{ start: number; end: number } | null>(null);
   const playStopTimerRef = useRef<number | null>(null);
   const whisperRef = useRef<Promise<WhisperTranscriber> | null>(null);
@@ -682,6 +684,9 @@ function App() {
     setActiveSegmentId('');
     setAudioUrl('');
     setVideoUrl('');
+    audioFileRef.current = null;
+    videoFileRef.current = null;
+    decodedAudioRef.current = null;
     setCurrentTime(0);
     setDuration(0);
     setIsPlaying(false);
@@ -823,15 +828,16 @@ function App() {
   }
 
   async function getDecodedAudio(): Promise<DecodedAudioCache> {
-    if (!audioUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
-    if (decodedAudioRef.current?.url === audioUrl) return decodedAudioRef.current;
-    const response = await fetch(audioUrl);
-    const arrayBuffer = await response.arrayBuffer();
+    const file = audioFileRef.current;
+    const cacheKey = file ? `${file.name}:${file.size}:${file.lastModified}` : audioUrl;
+    if (!file && !audioUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
+    if (decodedAudioRef.current?.url === cacheKey) return decodedAudioRef.current;
+    const arrayBuffer = file ? await file.arrayBuffer() : await (await fetch(audioUrl)).arrayBuffer();
     const audioContext = new AudioContext();
     try {
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
       const decoded = {
-        url: audioUrl,
+        url: cacheKey,
         sampleRate: audioBuffer.sampleRate,
         samples: mixToMono(audioBuffer)
       };
@@ -858,12 +864,14 @@ function App() {
   }
 
   async function recordSegmentAudio(segment: Segment): Promise<DecodedAudioCache> {
-    if (!audioUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
+    const sourceFile = audioFileRef.current ?? videoFileRef.current;
+    const sourceUrl = sourceFile ? URL.createObjectURL(sourceFile) : audioUrl;
+    if (!sourceUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
     if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder недоступен в этом браузере');
 
-    const isVideoSource = Boolean(videoUrl && audioUrl === videoUrl);
+    const isVideoSource = Boolean(sourceFile?.type.startsWith('video/') || (!sourceFile && videoUrl && audioUrl === videoUrl));
     const element = document.createElement(isVideoSource ? 'video' : 'audio') as CaptureMediaElement;
-    element.src = audioUrl;
+    element.src = sourceUrl;
     element.preload = 'auto';
     if (element instanceof HTMLVideoElement) element.playsInline = true;
     element.muted = true;
@@ -875,6 +883,7 @@ function App() {
     document.body.appendChild(element);
 
     try {
+      element.load();
       if (element.readyState < 1) await waitForMediaEvent(element, 'loadedmetadata');
       element.currentTime = Math.max(0, segment.startTime);
       await waitForMediaEvent(element, 'seeked');
@@ -931,6 +940,7 @@ function App() {
       element.removeAttribute('src');
       element.load();
       element.remove();
+      if (sourceFile) URL.revokeObjectURL(sourceUrl);
     }
   }
 
@@ -1342,6 +1352,8 @@ function App() {
   function handleAudioUpload(file?: File) {
     if (!file) return;
     const url = URL.createObjectURL(file);
+    audioFileRef.current = file;
+    decodedAudioRef.current = null;
     setAudioUrl(url);
     commit(
       (previous) => ({
@@ -1361,8 +1373,13 @@ function App() {
   function handleVideoUpload(file?: File) {
     if (!file) return;
     const url = URL.createObjectURL(file);
+    videoFileRef.current = file;
+    decodedAudioRef.current = null;
     setVideoUrl(url);
-    if (!audioUrl || state.media.audioPath === '/demo-audio.wav') setAudioUrl(url);
+    if (!audioUrl || state.media.audioPath === '/demo-audio.wav') {
+      audioFileRef.current = null;
+      setAudioUrl(url);
+    }
     commit((previous) => ({ ...previous, media: { ...previous.media, videoPath: file.name } }), false);
     announce('Видео загружено и синхронизировано с плеером');
   }
