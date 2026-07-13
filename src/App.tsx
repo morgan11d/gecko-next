@@ -92,6 +92,8 @@ type CaptureMediaElement = HTMLMediaElement & {
   mozCaptureStream?: () => MediaStream;
 };
 type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
+const MEDIA_DB_NAME = 'gecko-next-media-cache';
+const MEDIA_STORE_NAME = 'media';
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -368,6 +370,45 @@ function waitForMediaEvent(element: HTMLMediaElement, eventName: string, timeout
 function getRecorderMimeType(): string {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'video/webm;codecs=opus', 'video/webm'];
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? '';
+}
+
+function mediaCacheKey(kind: 'audio' | 'video', name: string) {
+  return `${kind}:${name}`;
+}
+
+function openMediaDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(MEDIA_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(MEDIA_STORE_NAME);
+    };
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB недоступен'));
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function storeMediaFile(kind: 'audio' | 'video', name: string, file: File): Promise<void> {
+  const db = await openMediaDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEDIA_STORE_NAME, 'readwrite');
+    tx.objectStore(MEDIA_STORE_NAME).put(file, mediaCacheKey(kind, name));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('Не удалось сохранить медиафайл'));
+  });
+  db.close();
+}
+
+async function restoreMediaFile(kind: 'audio' | 'video', name: string): Promise<File | null> {
+  const db = await openMediaDb();
+  const value = await new Promise<Blob | File | null>((resolve, reject) => {
+    const tx = db.transaction(MEDIA_STORE_NAME, 'readonly');
+    const request = tx.objectStore(MEDIA_STORE_NAME).get(mediaCacheKey(kind, name));
+    request.onsuccess = () => resolve((request.result as Blob | File | undefined) ?? null);
+    request.onerror = () => reject(request.error ?? new Error('Не удалось восстановить медиафайл'));
+  });
+  db.close();
+  if (!value) return null;
+  return value instanceof File ? value : new File([value], name, { type: value.type });
 }
 
 function App() {
@@ -863,10 +904,90 @@ function App() {
     }
   }
 
+  async function recordFromMediaElement(sourceElement: HTMLMediaElement, segment: Segment): Promise<DecodedAudioCache> {
+    if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder недоступен в этом браузере');
+
+    const previousTime = sourceElement.currentTime;
+    const wasPaused = sourceElement.paused;
+    const audioContext = new AudioContext();
+    let stream: MediaStream | null = null;
+
+    try {
+      if (sourceElement.readyState < 1) await waitForMediaEvent(sourceElement, 'loadedmetadata');
+      sourceElement.currentTime = Math.max(0, segment.startTime);
+      await waitForMediaEvent(sourceElement, 'seeked');
+
+      try {
+        const source = audioContext.createMediaElementSource(sourceElement);
+        const destination = audioContext.createMediaStreamDestination();
+        const silentGain = audioContext.createGain();
+        silentGain.gain.value = 0;
+        source.connect(destination);
+        source.connect(silentGain);
+        silentGain.connect(audioContext.destination);
+        await audioContext.resume();
+        stream = destination.stream;
+      } catch {
+        const captureElement = sourceElement as CaptureMediaElement;
+        stream = captureElement.captureStream?.() ?? captureElement.mozCaptureStream?.() ?? null;
+      }
+
+      if (!stream) throw new Error('Браузер не умеет извлекать аудио из текущего плеера');
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) throw new Error('В текущем медиа нет аудиодорожки');
+
+      const chunks: Blob[] = [];
+      const mimeType = getRecorderMimeType();
+      const recorder = new MediaRecorder(new MediaStream(audioTracks), mimeType ? { mimeType } : undefined);
+      const stopped = new Promise<Blob>((resolve, reject) => {
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+        };
+        recorder.onerror = () => reject(new Error('Не удалось записать аудиофрагмент для Whisper'));
+        recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }));
+      });
+
+      recorder.start(80);
+      await sourceElement.play();
+      const durationMs = Math.max(300, Math.min(30000, (segment.endTime - segment.startTime) * 1000 + 180));
+      await new Promise((resolve) => window.setTimeout(resolve, durationMs));
+      recorder.stop();
+      const blob = await stopped;
+      stream.getTracks().forEach((track) => track.stop());
+      return decodeAudioBlob(blob);
+    } finally {
+      sourceElement.pause();
+      if (Number.isFinite(previousTime)) sourceElement.currentTime = previousTime;
+      if (!wasPaused) sourceElement.play().catch(() => undefined);
+      stream?.getTracks().forEach((track) => track.stop());
+      void audioContext.close();
+    }
+  }
+
+  async function restoreCachedMediaFiles(): Promise<void> {
+    const media = stateRef.current.media;
+    if (!audioFileRef.current && media.audioPath && media.audioPath !== '/demo-audio.wav' && !media.audioPath.startsWith('blob:')) {
+      audioFileRef.current = await restoreMediaFile('audio', media.audioPath);
+    }
+    if (!videoFileRef.current && media.videoPath && !media.videoPath.startsWith('blob:')) {
+      videoFileRef.current = await restoreMediaFile('video', media.videoPath);
+    }
+  }
+
   async function recordSegmentAudio(segment: Segment): Promise<DecodedAudioCache> {
+    await restoreCachedMediaFiles();
+    const liveElement = videoRef.current?.src ? videoRef.current : audioRef.current?.src ? audioRef.current : null;
+    if (liveElement) {
+      try {
+        return await recordFromMediaElement(liveElement, segment);
+      } catch {
+        // Fall back to a fresh element built from the cached/uploaded file.
+      }
+    }
+
     const sourceFile = audioFileRef.current ?? videoFileRef.current;
     const sourceUrl = sourceFile ? URL.createObjectURL(sourceFile) : audioUrl;
-    if (!sourceUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
+    if (!sourceUrl) throw new Error('Сначала заново загрузите аудио или видео: браузер потерял исходный файл после обновления страницы');
     if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder недоступен в этом браузере');
 
     const isVideoSource = Boolean(sourceFile?.type.startsWith('video/') || (!sourceFile && videoUrl && audioUrl === videoUrl));
@@ -1354,6 +1475,7 @@ function App() {
     const url = URL.createObjectURL(file);
     audioFileRef.current = file;
     decodedAudioRef.current = null;
+    void storeMediaFile('audio', file.name, file).catch(() => announce('Не удалось сохранить аудио для AI-ASR после перезагрузки'));
     setAudioUrl(url);
     commit(
       (previous) => ({
@@ -1375,12 +1497,14 @@ function App() {
     const url = URL.createObjectURL(file);
     videoFileRef.current = file;
     decodedAudioRef.current = null;
+    void storeMediaFile('video', file.name, file).catch(() => announce('Не удалось сохранить видео для AI-ASR после перезагрузки'));
     setVideoUrl(url);
+    const useVideoAsAudio = !audioUrl || state.media.audioPath === '/demo-audio.wav';
     if (!audioUrl || state.media.audioPath === '/demo-audio.wav') {
       audioFileRef.current = null;
       setAudioUrl(url);
     }
-    commit((previous) => ({ ...previous, media: { ...previous.media, videoPath: file.name } }), false);
+    commit((previous) => ({ ...previous, media: { ...previous.media, videoPath: file.name, audioPath: useVideoAsAudio ? file.name : previous.media.audioPath } }), false);
     announce('Видео загружено и синхронизировано с плеером');
   }
 
