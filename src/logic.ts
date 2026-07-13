@@ -10,6 +10,7 @@ import type {
   QualityCheck,
   RoleName,
   Segment,
+  SegmentQualityLevel,
   Speaker,
   TaskStatus,
   Term,
@@ -43,9 +44,7 @@ export function roleTitle(role: RoleName): string {
     annotator: 'Разметчик',
     verifier: 'Верификатор',
     supervisor: 'Супервайзер',
-    admin: 'Администратор',
-    ml: 'ML-инженер',
-    customer: 'Заказчик'
+    admin: 'Администратор'
   };
   return titles[role];
 }
@@ -270,6 +269,23 @@ export function buildAiHints(state: AppState): Array<{ id: string; segmentId: st
   });
 
   return hints.slice(0, 8);
+}
+
+export function getSegmentQualityLevel(segment: Segment, checks: QualityCheck[]): SegmentQualityLevel {
+  const segmentChecks = checks.filter((check) => check.segmentId === segment.id && !check.result);
+  if (segmentChecks.some((check) => check.severity === 'critical')) return 'red';
+  if (segmentChecks.some((check) => check.severity === 'warning') || segment.confidence < 0.7) return 'yellow';
+  return 'green';
+}
+
+export function summarizeSegmentQuality(segments: Segment[], checks: QualityCheck[]) {
+  return segments.reduce<Record<SegmentQualityLevel, number>>(
+    (summary, segment) => {
+      summary[getSegmentQualityLevel(segment, checks)] += 1;
+      return summary;
+    },
+    { green: 0, yellow: 0, red: 0 }
+  );
 }
 
 export function exportGeckoJson(state: AppState, checks: QualityCheck[]): GeckoExport | GeckoV2Export {

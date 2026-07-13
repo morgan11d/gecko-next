@@ -54,7 +54,7 @@ await page.locator('.verifier-segment-panel .segment-row').nth(1).click();
 await page.waitForTimeout(200);
 const selectedHeading = await page.locator('.verifier-segment-panel h2').innerText();
 assert(selectedHeading.includes(secondSegmentId.replace('#', 'seg-')) || selectedHeading.includes(secondSegmentId), `Verifier segment picker must select ${secondSegmentId}, heading=${selectedHeading}`);
-assert(await page.locator('.verification-grid .check-list').evaluate((element) => element.scrollHeight >= element.clientHeight), 'Verification QA list must be scrollable or constrained');
+assert(await page.locator('.verification-grid .ai-quality-list').evaluate((element) => element.scrollHeight >= element.clientHeight), 'Verification AI quality list must be scrollable or constrained');
 
 await page.getByRole('button', { name: /Админ/ }).click();
 await page.waitForSelector('.admin-user-row', { timeout: 15000 });

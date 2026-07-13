@@ -1,4 +1,4 @@
-export type RoleName = 'annotator' | 'verifier' | 'supervisor' | 'admin' | 'ml' | 'customer';
+export type RoleName = 'annotator' | 'verifier' | 'supervisor' | 'admin';
 
 export type TaskStatus =
   | 'Новая'
@@ -14,6 +14,7 @@ export type SegmentStatus = 'new' | 'checked' | 'disputed' | 'returned' | 'accep
 export type TermStatus = 'new' | 'review' | 'approved' | 'rejected' | 'disputed';
 export type CommentStatus = 'open' | 'resolved';
 export type CheckSeverity = 'ok' | 'warning' | 'critical';
+export type SegmentQualityLevel = 'green' | 'yellow' | 'red';
 
 export interface User {
   id: string;
