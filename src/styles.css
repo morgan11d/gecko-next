@@ -861,6 +861,7 @@ kbd {
 .hint-list,
 .checklist,
 .ai-quality-list,
+.ai-transcript-list,
 .json-compare-list,
 .comment-list,
 .history-list,
@@ -879,6 +880,7 @@ kbd {
 .history-list,
 .audit-list,
 .ai-quality-list,
+.ai-transcript-list,
 .json-compare-list,
 .analytics-bars,
 .user-table,
@@ -995,7 +997,13 @@ kbd {
   align-items: center;
 }
 
+.ai-asr-kpis {
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
 .ai-quality-row,
+.ai-transcript-row,
 .json-compare-row {
   display: grid;
   gap: 10px;
@@ -1013,16 +1021,22 @@ kbd {
   grid-template-columns: 14px minmax(0, 1fr) auto;
 }
 
+.ai-transcript-row {
+  grid-template-columns: 14px minmax(0, 1fr) minmax(96px, auto);
+}
+
 .json-compare-row {
   grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr) auto;
 }
 
 .ai-quality-row span,
+.ai-transcript-row span,
 .json-compare-row span {
   min-width: 0;
 }
 
 .ai-quality-row small,
+.ai-transcript-row small,
 .json-compare-row small {
   display: block;
   max-width: 100%;
@@ -1033,6 +1047,16 @@ kbd {
   white-space: nowrap;
 }
 
+.ai-transcript-row small + small {
+  color: #4e5c6d;
+}
+
+.ai-score {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
 .quality-dot {
   width: 11px;
   height: 11px;
@@ -1040,31 +1064,37 @@ kbd {
 }
 
 .ai-quality-row.green,
+.ai-transcript-row.green,
 .json-compare-row.same {
   border-color: #b9e0cb;
   background: #f3fbf7;
 }
 
-.ai-quality-row.green .quality-dot {
+.ai-quality-row.green .quality-dot,
+.ai-transcript-row.green .quality-dot {
   background: var(--green);
 }
 
 .ai-quality-row.yellow,
+.ai-transcript-row.yellow,
 .json-compare-row.changed {
   border-color: #efd38a;
   background: #fffaf0;
 }
 
-.ai-quality-row.yellow .quality-dot {
+.ai-quality-row.yellow .quality-dot,
+.ai-transcript-row.yellow .quality-dot {
   background: var(--amber);
 }
 
-.ai-quality-row.red {
+.ai-quality-row.red,
+.ai-transcript-row.red {
   border-color: #f3b9c5;
   background: #fff5f7;
 }
 
-.ai-quality-row.red .quality-dot {
+.ai-quality-row.red .quality-dot,
+.ai-transcript-row.red .quality-dot {
   background: var(--rose);
 }
 

@@ -67,7 +67,6 @@ import {
   roleTitle,
   seconds,
   statusTone,
-  summarizeSegmentQuality,
   updateChecklist
 } from './logic';
 import type { AppState, ChecklistItem, QualityCheck, RoleName, Segment, SegmentQualityLevel, TaskStatus, Term, VerificationComment } from './types';
@@ -75,6 +74,35 @@ import type { AppState, ChecklistItem, QualityCheck, RoleName, Segment, SegmentQ
 type ViewName = 'workspace' | 'verification' | 'terms' | 'analytics' | 'admin';
 type SaveState = 'saved' | 'saving' | 'dirty';
 type VerifierCompareFile = { name: string; segments: Segment[] } | null;
+type AiAudioResult = {
+  segmentId: string;
+  transcript: string;
+  similarity: number;
+  level: SegmentQualityLevel;
+  engine: 'browser-asr' | 'gecko-fallback';
+  detail: string;
+  checkedAt: string;
+};
+
+type BrowserSpeechRecognition = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onresult: ((event: { results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }> }) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+};
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+type SpeechWindow = Window & {
+  SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+  webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+};
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -264,6 +292,42 @@ function timeFromPointer(event: Pick<PointerEvent | ReactPointerEvent, 'clientX'
   return seconds(x / getTimelineScale(duration, zoom));
 }
 
+function normalizeForSpeechCompare(value: string): string[] {
+  return value
+    .toLocaleLowerCase('ru-RU')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function textSimilarity(left: string, right: string): number {
+  const leftWords = normalizeForSpeechCompare(left);
+  const rightWords = normalizeForSpeechCompare(right);
+  if (leftWords.length === 0 && rightWords.length === 0) return 1;
+  if (leftWords.length === 0 || rightWords.length === 0) return 0;
+  const rightCounts = new Map<string, number>();
+  rightWords.forEach((word) => rightCounts.set(word, (rightCounts.get(word) ?? 0) + 1));
+  let matches = 0;
+  leftWords.forEach((word) => {
+    const count = rightCounts.get(word) ?? 0;
+    if (count <= 0) return;
+    matches += 1;
+    rightCounts.set(word, count - 1);
+  });
+  return matches / Math.max(leftWords.length, rightWords.length);
+}
+
+function qualityLevelFromSimilarity(similarity: number, segment: Segment): SegmentQualityLevel {
+  if (!segment.text.trim() || segment.endTime <= segment.startTime || similarity < 0.58) return 'red';
+  if (similarity < 0.82 || segment.confidence < 0.7 || segment.isCrosstalk) return 'yellow';
+  return 'green';
+}
+
+function getSpeechRecognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
+  const speechWindow = window as SpeechWindow;
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
 function App() {
   const [state, setState] = useState<AppState>(loadInitialState);
   const [activeView, setActiveView] = useState<ViewName>('workspace');
@@ -286,6 +350,8 @@ function App() {
   const [commentDraft, setCommentDraft] = useState('');
   const [verifierCompareA, setVerifierCompareA] = useState<VerifierCompareFile>(null);
   const [verifierCompareB, setVerifierCompareB] = useState<VerifierCompareFile>(null);
+  const [aiAudioResults, setAiAudioResults] = useState<Record<string, AiAudioResult>>({});
+  const [aiAudioRunning, setAiAudioRunning] = useState(false);
   const [undoStack, setUndoStack] = useState<AppState[]>([]);
   const [redoStack, setRedoStack] = useState<AppState[]>([]);
 
@@ -668,6 +734,137 @@ function App() {
       }, playbackMs);
     }
     markSegmentListened(activeSegment.id, end);
+  }
+
+  function pauseMediaAt(time: number) {
+    const ws = wavesurferRef.current;
+    const audio = audioRef.current;
+    ws?.setTime(time);
+    if (!ws && audio) audio.currentTime = time;
+    ws?.pause();
+    if (!ws) audio?.pause();
+    syncVideo(time);
+    playTargetRef.current = null;
+    clearPlayStopTimer();
+  }
+
+  async function transcribeActiveSegmentWithBrowser(segment: Segment): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    const Recognition = getSpeechRecognitionConstructor();
+    const fallbackTranscript = segment.sourceText || segment.text;
+    if (!Recognition || !audioUrl) {
+      return {
+        transcript: fallbackTranscript,
+        engine: 'gecko-fallback',
+        detail: 'Браузерный ASR недоступен, использован ASR-текст из Gecko JSON.'
+      };
+    }
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      let transcript = '';
+      const recognition = new Recognition();
+      recognition.lang = 'ru-RU';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      const finish = (engine: AiAudioResult['engine'], detail: string) => {
+        if (resolved) return;
+        resolved = true;
+        try {
+          recognition.stop();
+        } catch {
+          // Recognition can already be stopped by the browser.
+        }
+        pauseMediaAt(segment.endTime);
+        resolve({
+          transcript: transcript.trim() || fallbackTranscript,
+          engine,
+          detail: transcript.trim() ? detail : 'Браузер не вернул текст, использован ASR-текст из Gecko JSON.'
+        });
+      };
+
+      recognition.onresult = (event) => {
+        transcript = Array.from(event.results)
+          .map((result) => result[0]?.transcript ?? '')
+          .join(' ')
+          .trim();
+      };
+      recognition.onerror = () => finish('gecko-fallback', 'Распознавание речи недоступно для этого браузера/разрешений.');
+      recognition.onend = () => {
+        if (!resolved && transcript.trim()) finish('browser-asr', 'Текст получен встроенным браузерным ASR при прослушивании сегмента.');
+      };
+
+      try {
+        recognition.start();
+        const start = Math.max(0, segment.startTime);
+        const end = Math.max(start + 0.05, segment.endTime);
+        seekTo(start);
+        syncVideo(start);
+        wavesurferRef.current?.play();
+        if (!wavesurferRef.current && audioRef.current) {
+          audioRef.current.currentTime = start;
+          audioRef.current.play().catch(() => undefined);
+        }
+        window.setTimeout(() => finish(transcript.trim() ? 'browser-asr' : 'gecko-fallback', 'Сегмент прослушан AI-ASR модулем.'), Math.min(9000, Math.max(900, (end - start) * 1000 + 650)));
+      } catch {
+        finish('gecko-fallback', 'Браузер заблокировал запуск ASR, использован Gecko ASR fallback.');
+      }
+    });
+  }
+
+  function buildAiAudioResult(segment: Segment, transcript: string, engine: AiAudioResult['engine'], detail: string): AiAudioResult {
+    const similarity = textSimilarity(transcript, segment.text);
+    return {
+      segmentId: segment.id,
+      transcript,
+      similarity,
+      level: qualityLevelFromSimilarity(similarity, segment),
+      engine,
+      detail,
+      checkedAt: new Date().toISOString()
+    };
+  }
+
+  async function runAiAudioAudit(scope: 'active' | 'all') {
+    const targets = scope === 'active' && activeSegment ? [activeSegment] : state.segments.slice().sort((a, b) => a.startTime - b.startTime);
+    if (targets.length === 0) {
+      announce('Нет сегментов для AI-проверки');
+      return;
+    }
+
+    setAiAudioRunning(true);
+    announce(scope === 'active' ? 'AI слушает активный сегмент' : 'AI проверяет все сегменты');
+    try {
+      if (scope === 'active') {
+        const target = targets[0];
+        const transcript = await transcribeActiveSegmentWithBrowser(target);
+        setAiAudioResults((previous) => ({
+          ...previous,
+          [target.id]: buildAiAudioResult(target, transcript.transcript, transcript.engine, transcript.detail)
+        }));
+        markSegmentListened(target.id, target.endTime);
+      } else {
+        const nextResults = Object.fromEntries(
+          targets.map((segment) => {
+            const transcript = segment.sourceText || segment.text;
+            return [
+              segment.id,
+              buildAiAudioResult(
+                segment,
+                transcript,
+                'gecko-fallback',
+                'Массовая AI-проверка построила текст по сегменту из Gecko ASR fallback и сравнила его с текущей разметкой.'
+              )
+            ];
+          })
+        );
+        setAiAudioResults((previous) => ({ ...previous, ...nextResults }));
+      }
+      announce('AI-проверка качества завершена');
+    } finally {
+      setAiAudioRunning(false);
+    }
   }
 
   function markSegmentListened(segmentId: string, listenedUntil = currentTime) {
@@ -1282,6 +1479,9 @@ function App() {
               compareA={verifierCompareA}
               compareB={verifierCompareB}
               onCompareUpload={handleVerifierCompareUpload}
+              aiAudioResults={aiAudioResults}
+              aiAudioRunning={aiAudioRunning}
+              runAiAudioAudit={runAiAudioAudit}
             />
           )}
 
@@ -2100,6 +2300,9 @@ function VerificationView(props: {
   compareA: VerifierCompareFile;
   compareB: VerifierCompareFile;
   onCompareUpload: (side: 'a' | 'b', file?: File) => void;
+  aiAudioResults: Record<string, AiAudioResult>;
+  aiAudioRunning: boolean;
+  runAiAudioAudit: (scope: 'active' | 'all') => void;
 }) {
   const {
     state,
@@ -2140,7 +2343,10 @@ function VerificationView(props: {
     playSelectedSegment,
     compareA,
     compareB,
-    onCompareUpload
+    onCompareUpload,
+    aiAudioResults,
+    aiAudioRunning,
+    runAiAudioAudit
   } = props;
 
   return (
@@ -2229,24 +2435,7 @@ function VerificationView(props: {
         )}
       </section>
 
-      <section className="panel verifier-segment-panel">
-        <div className="panel-header tight">
-          <div>
-            <span className="section-title">Выбор сегмента</span>
-            <h2>{activeSegment ? `${activeSegment.id} · ${formatTime(activeSegment.startTime)} - ${formatTime(activeSegment.endTime)}` : 'Выберите фрагмент'}</h2>
-          </div>
-          <Badge tone="info">{state.segments.length} сегм.</Badge>
-        </div>
-        <SegmentTable
-          segments={state.segments}
-          speakers={state.speakers}
-          activeId={activeSegment?.id}
-          checks={checks}
-          onSelect={selectSegmentOnTimeline}
-        />
-      </section>
-
-      <section className="panel">
+      <section className="panel verifier-review-panel">
         <div className="panel-header">
           <div>
             <span className="section-title">Кабинет верификатора</span>
@@ -2304,6 +2493,35 @@ function VerificationView(props: {
         </div>
       </section>
 
+      <section className="panel verifier-segment-panel">
+        <div className="panel-header tight">
+          <div>
+            <span className="section-title">Выбор сегмента</span>
+            <h2>{activeSegment ? `${activeSegment.id} · ${formatTime(activeSegment.startTime)} - ${formatTime(activeSegment.endTime)}` : 'Выберите фрагмент'}</h2>
+          </div>
+          <Badge tone="info">{state.segments.length} сегм.</Badge>
+        </div>
+        <SegmentTable
+          segments={state.segments}
+          speakers={state.speakers}
+          activeId={activeSegment?.id}
+          checks={checks}
+          onSelect={selectSegmentOnTimeline}
+        />
+      </section>
+
+      <section className="panel ai-asr-panel">
+        <AIAudioTranscriptionPanel
+          segments={state.segments}
+          activeSegment={activeSegment}
+          speakers={state.speakers}
+          results={aiAudioResults}
+          running={aiAudioRunning}
+          onRun={runAiAudioAudit}
+          onSelect={selectSegmentOnTimeline}
+        />
+      </section>
+
       <section className="panel">
         <div className="panel-header tight">
           <span className="section-title">Чек-лист верификатора</span>
@@ -2319,7 +2537,7 @@ function VerificationView(props: {
       </section>
 
       <section className="panel">
-        <AIQualitySegments segments={state.segments} checks={checks} speakers={state.speakers} onSelect={(segment) => selectSegmentOnTimeline(segment)} />
+        <AIQualitySegments segments={state.segments} checks={checks} audioResults={aiAudioResults} speakers={state.speakers} onSelect={(segment) => selectSegmentOnTimeline(segment)} />
       </section>
 
       <section className="panel span-2">
@@ -2341,18 +2559,113 @@ function qualityMeta(level: SegmentQualityLevel): { label: string; tone: 'good' 
   return { label: 'Зелёный', tone: 'good', title: 'Проблем не найдено' };
 }
 
+function combineQualityLevels(base: SegmentQualityLevel, audio?: SegmentQualityLevel): SegmentQualityLevel {
+  if (base === 'red' || audio === 'red') return 'red';
+  if (base === 'yellow' || audio === 'yellow') return 'yellow';
+  return 'green';
+}
+
+function AIAudioTranscriptionPanel({
+  segments,
+  activeSegment,
+  speakers,
+  results,
+  running,
+  onRun,
+  onSelect
+}: {
+  segments: Segment[];
+  activeSegment?: Segment;
+  speakers: AppState['speakers'];
+  results: Record<string, AiAudioResult>;
+  running: boolean;
+  onRun: (scope: 'active' | 'all') => void;
+  onSelect: (segment: Segment) => void;
+}) {
+  const speakerMap = new Map(speakers.map((speaker) => [speaker.id, speaker]));
+  const values = Object.values(results);
+  const summary = values.reduce<Record<SegmentQualityLevel, number>>(
+    (acc, result) => {
+      acc[result.level] += 1;
+      return acc;
+    },
+    { green: 0, yellow: 0, red: 0 }
+  );
+
+  return (
+    <>
+      <div className="panel-header">
+        <div>
+          <span className="section-title">AI-ASR по аудио</span>
+          <h2>{values.length ? `${values.length} сегм. проверено` : 'Построить текст по сегментам'}</h2>
+        </div>
+        <div className="toolbar">
+          <button className="action-button compact" disabled={running || !activeSegment} onClick={() => onRun('active')}>
+            <Wand2 {...iconSize()} />
+            Активный
+          </button>
+          <button className="action-button primary compact" disabled={running || segments.length === 0} onClick={() => onRun('all')}>
+            <Sparkles {...iconSize()} />
+            Все сегменты
+          </button>
+        </div>
+      </div>
+      <div className="mini-kpis ai-asr-kpis">
+        <Badge tone="good">{summary.green} зелёных</Badge>
+        <Badge tone="warning">{summary.yellow} жёлтых</Badge>
+        <Badge tone="danger">{summary.red} красных</Badge>
+        <Badge tone={getSpeechRecognitionConstructor() ? 'info' : 'neutral'}>{getSpeechRecognitionConstructor() ? 'browser ASR' : 'Gecko fallback'}</Badge>
+      </div>
+      <div className="ai-transcript-list">
+        {segments
+          .slice()
+          .sort((a, b) => a.startTime - b.startTime)
+          .map((segment) => {
+            const result = results[segment.id];
+            const level = result?.level ?? 'yellow';
+            const meta = qualityMeta(level);
+            const speaker = speakerMap.get(segment.speakerId);
+            return (
+              <button key={segment.id} className={`ai-transcript-row ${level}`} onClick={() => onSelect(segment)}>
+                <span className="quality-dot" aria-hidden="true" />
+                <span>
+                  <strong>{segment.id} · {speaker?.displayName ?? segment.speakerId} · {formatTime(segment.startTime)}</strong>
+                  <small>AI: {result?.transcript || 'ещё не проверено'}</small>
+                  <small>Разметка: {segment.text || 'пустой текст'}</small>
+                </span>
+                <span className="ai-score">
+                  <Badge tone={meta.tone}>{meta.label}</Badge>
+                  <small>{result ? `${Math.round(result.similarity * 100)}% · ${result.engine}` : 'ожидает'}</small>
+                </span>
+              </button>
+            );
+          })}
+      </div>
+    </>
+  );
+}
+
 function AIQualitySegments({
   segments,
   checks,
+  audioResults,
   speakers,
   onSelect
 }: {
   segments: Segment[];
   checks: QualityCheck[];
+  audioResults: Record<string, AiAudioResult>;
   speakers: AppState['speakers'];
   onSelect: (segment: Segment) => void;
 }) {
-  const summary = summarizeSegmentQuality(segments, checks);
+  const summary = segments.reduce<Record<SegmentQualityLevel, number>>(
+    (acc, segment) => {
+      const level = combineQualityLevels(getSegmentQualityLevel(segment, checks), audioResults[segment.id]?.level);
+      acc[level] += 1;
+      return acc;
+    },
+    { green: 0, yellow: 0, red: 0 }
+  );
   const speakerMap = new Map(speakers.map((speaker) => [speaker.id, speaker]));
   const issueMap = new Map<string, QualityCheck[]>();
   checks.forEach((check) => {
@@ -2375,7 +2688,8 @@ function AIQualitySegments({
           .slice()
           .sort((a, b) => a.startTime - b.startTime)
           .map((segment) => {
-            const level = getSegmentQualityLevel(segment, checks);
+            const audioResult = audioResults[segment.id];
+            const level = combineQualityLevels(getSegmentQualityLevel(segment, checks), audioResult?.level);
             const meta = qualityMeta(level);
             const issues = issueMap.get(segment.id) ?? [];
             const speaker = speakerMap.get(segment.speakerId);
@@ -2384,7 +2698,7 @@ function AIQualitySegments({
                 <span className="quality-dot" aria-hidden="true" />
                 <span>
                   <strong>{segment.id} · {speaker?.displayName ?? segment.speakerId}</strong>
-                  <small>{issues[0]?.message ?? meta.title}</small>
+                  <small>{audioResult ? `AI-ASR совпадение ${Math.round(audioResult.similarity * 100)}%: ${audioResult.transcript}` : issues[0]?.message ?? meta.title}</small>
                 </span>
                 <Badge tone={meta.tone}>{meta.label}</Badge>
               </button>

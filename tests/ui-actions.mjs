@@ -54,6 +54,9 @@ await page.locator('.verifier-segment-panel .segment-row').nth(1).click();
 await page.waitForTimeout(200);
 const selectedHeading = await page.locator('.verifier-segment-panel h2').innerText();
 assert(selectedHeading.includes(secondSegmentId.replace('#', 'seg-')) || selectedHeading.includes(secondSegmentId), `Verifier segment picker must select ${secondSegmentId}, heading=${selectedHeading}`);
+await page.getByRole('button', { name: /Все сегменты/ }).click();
+await page.waitForFunction(() => document.querySelector('.ai-transcript-row .badge.good, .ai-transcript-row .badge.warning, .ai-transcript-row .badge.danger'), null, { timeout: 5000 });
+assert((await page.locator('.ai-transcript-row').count()) > 0, 'AI-ASR panel must render segment-level transcript rows');
 assert(await page.locator('.verification-grid .ai-quality-list').evaluate((element) => element.scrollHeight >= element.clientHeight), 'Verification AI quality list must be scrollable or constrained');
 
 await page.getByRole('button', { name: /Админ/ }).click();
