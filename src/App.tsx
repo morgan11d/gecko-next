@@ -79,7 +79,7 @@ type AiAudioResult = {
   transcript: string;
   similarity: number;
   level: SegmentQualityLevel;
-  engine: 'whisper-browser' | 'gecko-fallback';
+  engine: 'whisper-browser' | 'openai-transcribe' | 'gecko-fallback';
   detail: string;
   checkedAt: string;
 };
@@ -104,6 +104,7 @@ type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
 type FfmpegWindow = Window & { FFmpegWASM?: { FFmpeg: new () => FfmpegInstance } };
 const MEDIA_DB_NAME = 'gecko-next-media-cache';
 const MEDIA_STORE_NAME = 'media';
+const OPENAI_KEY_STORAGE = 'gecko-next-openai-api-key';
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -320,7 +321,7 @@ function textSimilarity(left: string, right: string): number {
 
 function audioQualityLevel(segment: Segment, similarity: number, engine: AiAudioResult['engine']): SegmentQualityLevel {
   if (!segment.text.trim() || segment.endTime <= segment.startTime || similarity < 0.62) return 'red';
-  if (engine === 'whisper-browser') {
+  if (engine === 'whisper-browser' || engine === 'openai-transcribe') {
     if (similarity >= 0.86 && segment.confidence >= 0.72 && !segment.isCrosstalk) return 'green';
     return 'yellow';
   }
@@ -351,6 +352,43 @@ function resampleAudio(samples: Float32Array, fromRate: number, toRate: number):
     next[index] = samples[left] * (1 - weight) + samples[right] * weight;
   }
   return next;
+}
+
+function writeAscii(view: DataView, offset: number, value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index));
+  }
+}
+
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const bytesPerSample = 2;
+  const channelCount = 1;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channelCount, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channelCount * bytesPerSample, true);
+  view.setUint16(32, channelCount * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += bytesPerSample;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 function waitForMediaEvent(element: HTMLMediaElement, eventName: string, timeout = 8000): Promise<void> {
@@ -482,6 +520,7 @@ function App() {
   const [aiAudioRunning, setAiAudioRunning] = useState(false);
   const [aiModelStatus, setAiModelStatus] = useState<AiModelStatus>('idle');
   const [aiAudioProgress, setAiAudioProgress] = useState('');
+  const [openAiApiKey, setOpenAiApiKey] = useState(() => sessionStorage.getItem(OPENAI_KEY_STORAGE) ?? '');
   const [undoStack, setUndoStack] = useState<AppState[]>([]);
   const [redoStack, setRedoStack] = useState<AppState[]>([]);
 
@@ -531,6 +570,12 @@ function App() {
     setToast(message);
     window.setTimeout(() => setToast(''), 2600);
   };
+
+  function updateOpenAiApiKey(value: string) {
+    setOpenAiApiKey(value);
+    if (value.trim()) sessionStorage.setItem(OPENAI_KEY_STORAGE, value.trim());
+    else sessionStorage.removeItem(OPENAI_KEY_STORAGE);
+  }
 
   useEffect(() => {
     stateRef.current = state;
@@ -1276,6 +1321,63 @@ function App() {
     };
   }
 
+  async function transcribeSegmentWithOpenAi(segment: Segment, apiKey: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    const { samples, source } = await getSegmentAudioSamples(segment);
+    const wav = encodeWav(samples, 16000);
+    const form = new FormData();
+    form.append('model', 'gpt-4o-mini-transcribe');
+    form.append('language', 'ru');
+    form.append('response_format', 'text');
+    form.append('file', new File([wav], `${segment.id}.wav`, { type: 'audio/wav' }));
+
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: form
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`OpenAI ASR ${response.status}: ${errorText.slice(0, 180) || response.statusText}`);
+    }
+
+    const text = await response.text();
+    return {
+      transcript: text.trim(),
+      engine: 'openai-transcribe',
+      detail: source === 'ffmpeg-extracted'
+        ? 'Текст распознан OpenAI gpt-4o-mini-transcribe из WAV-фрагмента, извлечённого через ffmpeg.wasm.'
+        : source === 'recorded-media'
+          ? 'Текст распознан OpenAI gpt-4o-mini-transcribe из записанного аудиофрагмента.'
+          : 'Текст распознан OpenAI gpt-4o-mini-transcribe из аудио сегмента.'
+    };
+  }
+
+  async function transcribeSegmentWithAi(segment: Segment, apiKey: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    if (apiKey.trim()) {
+      try {
+        return await transcribeSegmentWithOpenAi(segment, apiKey.trim());
+      } catch (openAiError) {
+        try {
+          const whisper = await transcribeSegmentWithWhisper(segment);
+          return {
+            ...whisper,
+            detail: `${whisper.detail} OpenAI недоступен: ${openAiError instanceof Error ? openAiError.message : String(openAiError)}`
+          };
+        } catch (whisperError) {
+          throw new Error(
+            `OpenAI недоступен: ${openAiError instanceof Error ? openAiError.message : String(openAiError)}; ` +
+            `Whisper недоступен: ${whisperError instanceof Error ? whisperError.message : String(whisperError)}`
+          );
+        }
+      }
+    }
+
+    return transcribeSegmentWithWhisper(segment);
+  }
+
   function buildAiAudioResult(segment: Segment, transcript: string, engine: AiAudioResult['engine'], detail: string): AiAudioResult {
     const similarity = textSimilarity(transcript, segment.text);
     return {
@@ -1298,33 +1400,36 @@ function App() {
 
     setAiAudioRunning(true);
     setAiAudioProgress('');
-    announce(scope === 'active' ? 'Whisper распознаёт активный сегмент' : 'Whisper распознаёт сегменты');
+    setAiModelStatus('loading');
+    const aiProviderName = openAiApiKey.trim() ? 'OpenAI ASR' : 'Whisper';
+    announce(scope === 'active' ? `${aiProviderName} распознаёт активный сегмент` : `${aiProviderName} распознаёт сегменты`);
     try {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
         setAiAudioProgress(`${index + 1}/${targets.length} · ${target.id}`);
         try {
-          const transcript = await transcribeSegmentWithWhisper(target);
+          const transcript = await transcribeSegmentWithAi(target, openAiApiKey);
           setAiAudioResults((previous) => ({
             ...previous,
             [target.id]: buildAiAudioResult(target, transcript.transcript, transcript.engine, transcript.detail)
           }));
         } catch (error) {
           const fallbackText = target.sourceText || '';
-          const detail = error instanceof Error ? error.message : 'Whisper не смог распознать сегмент';
+          const detail = error instanceof Error ? error.message : 'AI-ASR не смог распознать сегмент';
           setAiAudioResults((previous) => ({
             ...previous,
             [target.id]: buildAiAudioResult(
               target,
               fallbackText,
               'gecko-fallback',
-              `Whisper недоступен: ${detail}. Это не считается настоящим AI-распознаванием.`
+              `AI-ASR недоступен: ${detail}. Это не считается настоящим AI-распознаванием.`
             )
           }));
         }
         markSegmentListened(target.id, target.endTime);
       }
-      announce('Whisper-проверка качества завершена');
+      if (openAiApiKey.trim()) setAiModelStatus('ready');
+      announce('AI-ASR проверка качества завершена');
     } finally {
       setAiAudioRunning(false);
       setAiAudioProgress('');
@@ -1957,6 +2062,8 @@ function App() {
               aiAudioRunning={aiAudioRunning}
               aiModelStatus={aiModelStatus}
               aiAudioProgress={aiAudioProgress}
+              openAiApiKey={openAiApiKey}
+              setOpenAiApiKey={updateOpenAiApiKey}
               runAiAudioAudit={runAiAudioAudit}
             />
           )}
@@ -2780,6 +2887,8 @@ function VerificationView(props: {
   aiAudioRunning: boolean;
   aiModelStatus: AiModelStatus;
   aiAudioProgress: string;
+  openAiApiKey: string;
+  setOpenAiApiKey: (value: string) => void;
   runAiAudioAudit: (scope: 'active' | 'all') => void;
 }) {
   const {
@@ -2826,6 +2935,8 @@ function VerificationView(props: {
     aiAudioRunning,
     aiModelStatus,
     aiAudioProgress,
+    openAiApiKey,
+    setOpenAiApiKey,
     runAiAudioAudit
   } = props;
 
@@ -2999,6 +3110,8 @@ function VerificationView(props: {
           running={aiAudioRunning}
           modelStatus={aiModelStatus}
           progress={aiAudioProgress}
+          openAiApiKey={openAiApiKey}
+          setOpenAiApiKey={setOpenAiApiKey}
           onRun={runAiAudioAudit}
           onSelect={selectSegmentOnTimeline}
         />
@@ -3055,6 +3168,8 @@ function AIAudioTranscriptionPanel({
   running,
   modelStatus,
   progress,
+  openAiApiKey,
+  setOpenAiApiKey,
   onRun,
   onSelect
 }: {
@@ -3065,6 +3180,8 @@ function AIAudioTranscriptionPanel({
   running: boolean;
   modelStatus: AiModelStatus;
   progress: string;
+  openAiApiKey: string;
+  setOpenAiApiKey: (value: string) => void;
   onRun: (scope: 'active' | 'all') => void;
   onSelect: (segment: Segment) => void;
 }) {
@@ -3077,11 +3194,12 @@ function AIAudioTranscriptionPanel({
     },
     { green: 0, yellow: 0, red: 0 }
   );
-  const hasWhisperResult = values.some((result) => result.engine === 'whisper-browser');
+  const hasRealAsrResult = values.some((result) => result.engine === 'whisper-browser' || result.engine === 'openai-transcribe');
+  const hasOpenAiKey = openAiApiKey.trim().length > 0;
   const statusLabel: Record<AiModelStatus, string> = {
     idle: 'модель не загружена',
-    loading: 'загрузка Whisper',
-    ready: 'Whisper готов',
+    loading: hasOpenAiKey ? 'OpenAI/Whisper работает' : 'загрузка Whisper',
+    ready: hasOpenAiKey ? 'OpenAI key готов' : 'Whisper готов',
     error: 'ошибка модели'
   };
 
@@ -3090,7 +3208,7 @@ function AIAudioTranscriptionPanel({
       <div className="panel-header">
         <div>
           <span className="section-title">AI-ASR по аудио</span>
-          <h2>{running ? progress || 'Whisper работает' : values.length ? `${values.length} сегм. проверено` : 'Whisper распознаёт звук'}</h2>
+          <h2>{running ? progress || 'AI распознаёт' : values.length ? `${values.length} сегм. проверено` : 'AI распознаёт звук'}</h2>
         </div>
         <div className="toolbar">
           <button className="action-button compact" disabled={running || !activeSegment} onClick={() => onRun('active')}>
@@ -3108,7 +3226,20 @@ function AIAudioTranscriptionPanel({
         <Badge tone="warning">{summary.yellow} жёлтых</Badge>
         <Badge tone="danger">{summary.red} красных</Badge>
         <Badge tone={modelStatus === 'ready' ? 'info' : modelStatus === 'error' ? 'danger' : 'neutral'}>{statusLabel[modelStatus]}</Badge>
-        <Badge tone={hasWhisperResult ? 'info' : 'neutral'}>{hasWhisperResult ? 'реальный Whisper' : 'нет AI-распознавания'}</Badge>
+        <Badge tone={hasRealAsrResult ? 'info' : 'neutral'}>{hasRealAsrResult ? 'реальный ASR' : 'нет AI-распознавания'}</Badge>
+      </div>
+      <div className="ai-provider-settings">
+        <label>
+          <span>OpenAI API key</span>
+          <input
+            type="password"
+            value={openAiApiKey}
+            autoComplete="off"
+            placeholder="sk-..."
+            onChange={(event) => setOpenAiApiKey(event.target.value)}
+          />
+        </label>
+        <Badge tone={hasOpenAiKey ? 'info' : 'neutral'}>{hasOpenAiKey ? 'OpenAI ASR включён' : 'браузерный Whisper'}</Badge>
       </div>
       <div className="ai-transcript-list">
         {segments

@@ -1002,6 +1002,18 @@ kbd {
   flex-wrap: wrap;
 }
 
+.ai-provider-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.ai-provider-settings label {
+  min-width: 0;
+}
+
 .ai-quality-row,
 .ai-transcript-row,
 .json-compare-row {
