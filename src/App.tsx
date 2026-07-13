@@ -86,12 +86,22 @@ type AiAudioResult = {
 type AiModelStatus = 'idle' | 'loading' | 'ready' | 'error';
 type WhisperTranscriber = (audio: Float32Array, options?: Record<string, unknown>) => Promise<string | { text?: string }>;
 type DecodedAudioCache = { url: string; sampleRate: number; samples: Float32Array };
-type SegmentAudioSource = 'decoded-file' | 'recorded-media';
+type SegmentAudioSource = 'decoded-file' | 'ffmpeg-extracted' | 'recorded-media';
 type CaptureMediaElement = HTMLMediaElement & {
   captureStream?: () => MediaStream;
   mozCaptureStream?: () => MediaStream;
 };
+type FfmpegFileData = Uint8Array | string;
+type FfmpegInstance = {
+  loaded?: boolean;
+  load: (options?: Record<string, unknown>) => Promise<void>;
+  writeFile: (path: string, data: Uint8Array) => Promise<void>;
+  readFile: (path: string) => Promise<FfmpegFileData>;
+  deleteFile?: (path: string) => Promise<void>;
+  exec: (args: string[]) => Promise<number>;
+};
 type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
+type FfmpegWindow = Window & { FFmpegWASM?: { FFmpeg: new () => FfmpegInstance } };
 const MEDIA_DB_NAME = 'gecko-next-media-cache';
 const MEDIA_STORE_NAME = 'media';
 
@@ -367,6 +377,10 @@ function waitForMediaEvent(element: HTMLMediaElement, eventName: string, timeout
   });
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function getRecorderMimeType(): string {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'video/webm;codecs=opus', 'video/webm'];
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? '';
@@ -411,6 +425,37 @@ async function restoreMediaFile(kind: 'audio' | 'video', name: string): Promise<
   return value instanceof File ? value : new File([value], name, { type: value.type });
 }
 
+async function remoteBlobUrl(url: string, mimeType: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Не удалось загрузить AI-модуль: ${response.status}`);
+  return URL.createObjectURL(new Blob([await response.arrayBuffer()], { type: mimeType }));
+}
+
+async function loadPatchedFfmpegGlobal(): Promise<{ FFmpeg: new () => FfmpegInstance }> {
+  const ffmpegWindow = window as FfmpegWindow;
+  if (ffmpegWindow.FFmpegWASM?.FFmpeg) return ffmpegWindow.FFmpegWASM;
+
+  const response = await fetch('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js');
+  if (!response.ok) throw new Error(`Не удалось загрузить ffmpeg.wasm: ${response.status}`);
+  const patchedScript = (await response.text()).replace('{type:"module"})', '{type:void 0})');
+  const scriptUrl = URL.createObjectURL(new Blob([patchedScript], { type: 'text/javascript' }));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = scriptUrl;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Не удалось запустить ffmpeg.wasm'));
+      document.head.appendChild(script);
+    });
+  } finally {
+    URL.revokeObjectURL(scriptUrl);
+  }
+
+  if (!ffmpegWindow.FFmpegWASM?.FFmpeg) throw new Error('ffmpeg.wasm не инициализировался');
+  return ffmpegWindow.FFmpegWASM;
+}
+
 function App() {
   const [state, setState] = useState<AppState>(loadInitialState);
   const [activeView, setActiveView] = useState<ViewName>('workspace');
@@ -450,6 +495,7 @@ function App() {
   const playTargetRef = useRef<{ start: number; end: number } | null>(null);
   const playStopTimerRef = useRef<number | null>(null);
   const whisperRef = useRef<Promise<WhisperTranscriber> | null>(null);
+  const ffmpegRef = useRef<Promise<FfmpegInstance> | null>(null);
   const decodedAudioRef = useRef<DecodedAudioCache | null>(null);
   const firstSave = useRef(true);
 
@@ -847,14 +893,51 @@ function App() {
     if (!whisperRef.current) {
       setAiModelStatus('loading');
       whisperRef.current = (async () => {
-        const transformersUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
-        const transformers = await import(/* @vite-ignore */ transformersUrl);
+        const transformersUrls = [
+          'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2',
+          'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/dist/transformers.min.js',
+          'https://unpkg.com/@huggingface/transformers@3.7.2',
+          'https://unpkg.com/@huggingface/transformers@3.7.2/dist/transformers.min.js',
+          'https://esm.sh/@huggingface/transformers@3.7.2'
+        ];
+        let transformers: {
+          env: { allowLocalModels: boolean; useBrowserCache: boolean; remoteHost?: string };
+          pipeline: (...args: unknown[]) => Promise<unknown>;
+        } | null = null;
+        const errors: string[] = [];
+        for (const url of transformersUrls) {
+          try {
+            transformers = await import(/* @vite-ignore */ url);
+            break;
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (!transformers) {
+          throw new Error(`Transformers.js не загрузился с доступных CDN: ${errors.at(-1) ?? 'нет ответа'}`);
+        }
         transformers.env.allowLocalModels = false;
         transformers.env.useBrowserCache = true;
-        const transcriber = await transformers.pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
-          dtype: 'q8'
-        });
-        return transcriber as WhisperTranscriber;
+        const modelCandidates = ['onnx-community/whisper-tiny', 'Xenova/whisper-tiny'];
+        const modelHosts = ['https://huggingface.co', 'https://hf-mirror.com'];
+        const modelErrors: string[] = [];
+        for (const host of modelHosts) {
+          transformers.env.remoteHost = host;
+          for (const modelId of modelCandidates) {
+            for (let attempt = 1; attempt <= 2; attempt += 1) {
+              try {
+                const transcriber = await transformers.pipeline('automatic-speech-recognition', modelId, {
+                  dtype: 'q8'
+                });
+                return transcriber as WhisperTranscriber;
+              } catch (error) {
+                modelErrors.push(`${modelId} @ ${host}: ${error instanceof Error ? error.message : String(error)}`);
+                if (attempt < 2) await wait(1200);
+              }
+            }
+          }
+        }
+        throw new Error(`Модель Whisper не загрузилась: ${modelErrors.at(-1) ?? 'нет ответа от CDN модели'}`);
       })();
     }
     try {
@@ -864,6 +947,29 @@ function App() {
     } catch (error) {
       whisperRef.current = null;
       setAiModelStatus('error');
+      throw error;
+    }
+  }
+
+  async function getFfmpeg(): Promise<FfmpegInstance> {
+    if (!ffmpegRef.current) {
+      ffmpegRef.current = (async () => {
+        const { FFmpeg } = await loadPatchedFfmpegGlobal();
+        const ffmpeg = new FFmpeg() as FfmpegInstance;
+        const baseUrl = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
+        await ffmpeg.load({
+          classWorkerURL: await remoteBlobUrl('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd/814.ffmpeg.js', 'text/javascript'),
+          coreURL: await remoteBlobUrl(`${baseUrl}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await remoteBlobUrl(`${baseUrl}/ffmpeg-core.wasm`, 'application/wasm')
+        });
+        return ffmpeg;
+      })();
+    }
+
+    try {
+      return await ffmpegRef.current;
+    } catch (error) {
+      ffmpegRef.current = null;
       throw error;
     }
   }
@@ -972,10 +1078,72 @@ function App() {
     if (!videoFileRef.current && media.videoPath && !media.videoPath.startsWith('blob:')) {
       videoFileRef.current = await restoreMediaFile('video', media.videoPath);
     }
+    if (!audioFileRef.current && !videoFileRef.current && media.audioPath && !media.audioPath.startsWith('blob:')) {
+      videoFileRef.current = await restoreMediaFile('video', media.audioPath);
+    }
+  }
+
+  async function getAiSourceFile(): Promise<File | null> {
+    await restoreCachedMediaFiles();
+    return audioFileRef.current ?? videoFileRef.current;
+  }
+
+  function extensionForMediaFile(file: File): string {
+    const fromName = file.name.match(/\.([a-z0-9]+)$/i)?.[1];
+    if (fromName) return fromName.toLowerCase();
+    if (file.type.includes('mp4')) return 'mp4';
+    if (file.type.includes('webm')) return 'webm';
+    if (file.type.includes('mpeg')) return 'mp3';
+    if (file.type.includes('wav')) return 'wav';
+    return file.type.startsWith('video/') ? 'mp4' : 'wav';
+  }
+
+  async function extractSegmentWithFfmpeg(segment: Segment): Promise<DecodedAudioCache> {
+    const sourceFile = await getAiSourceFile();
+    if (!sourceFile) {
+      throw new Error('Заново загрузите видео или аудио: исходный файл не найден в памяти браузера');
+    }
+
+    const ffmpeg = await getFfmpeg();
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const inputName = `input-${stamp}.${extensionForMediaFile(sourceFile)}`;
+    const outputName = `segment-${stamp}.wav`;
+    const durationSeconds = Math.max(0.25, seconds(segment.endTime - segment.startTime));
+
+    try {
+      await ffmpeg.writeFile(inputName, new Uint8Array(await sourceFile.arrayBuffer()));
+      await ffmpeg.exec([
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-ss',
+        String(Math.max(0, seconds(segment.startTime))),
+        '-t',
+        String(durationSeconds),
+        '-i',
+        inputName,
+        '-vn',
+        '-ac',
+        '1',
+        '-ar',
+        '16000',
+        '-f',
+        'wav',
+        outputName
+      ]);
+      const output = await ffmpeg.readFile(outputName);
+      const bytes = typeof output === 'string' ? new TextEncoder().encode(output) : output;
+      const wavBuffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(wavBuffer).set(bytes);
+      return decodeAudioBlob(new Blob([wavBuffer], { type: 'audio/wav' }));
+    } finally {
+      await ffmpeg.deleteFile?.(inputName).catch(() => undefined);
+      await ffmpeg.deleteFile?.(outputName).catch(() => undefined);
+    }
   }
 
   async function recordSegmentAudio(segment: Segment): Promise<DecodedAudioCache> {
-    await restoreCachedMediaFiles();
+    await getAiSourceFile();
     const liveElement = videoRef.current?.src ? videoRef.current : audioRef.current?.src ? audioRef.current : null;
     if (liveElement) {
       try {
@@ -1071,8 +1239,13 @@ function App() {
     try {
       decoded = await getDecodedAudio();
     } catch {
-      decoded = await recordSegmentAudio(segment);
-      source = 'recorded-media';
+      try {
+        decoded = await extractSegmentWithFfmpeg(segment);
+        source = 'ffmpeg-extracted';
+      } catch {
+        decoded = await recordSegmentAudio(segment);
+        source = 'recorded-media';
+      }
     }
     const startIndex = Math.max(0, Math.floor(segment.startTime * decoded.sampleRate));
     const endIndex = Math.min(decoded.samples.length, Math.ceil(segment.endTime * decoded.sampleRate));
@@ -1095,9 +1268,11 @@ function App() {
     return {
       transcript: text.trim(),
       engine: 'whisper-browser',
-      detail: source === 'recorded-media'
-        ? 'Текст распознан Whisper из записанного аудиофрагмента видео/медиа.'
-        : 'Текст распознан Whisper из аудио сегмента в браузере.'
+      detail: source === 'ffmpeg-extracted'
+        ? 'Текст распознан Whisper из WAV-фрагмента, извлечённого из видео/аудио через ffmpeg.wasm.'
+        : source === 'recorded-media'
+          ? 'Текст распознан Whisper из записанного аудиофрагмента видео/медиа.'
+          : 'Текст распознан Whisper из аудио сегмента в браузере.'
     };
   }
 
