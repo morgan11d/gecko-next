@@ -499,7 +499,7 @@ function getDefaultAsrEndpoint(): string {
   if (stored !== null) return stored;
   const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
   if (env?.VITE_ASR_API_URL) return env.VITE_ASR_API_URL;
-  return ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? 'http://127.0.0.1:8000' : '';
+  return '';
 }
 
 function App() {
@@ -953,7 +953,13 @@ function App() {
           'https://esm.sh/@huggingface/transformers@3.7.2'
         ];
         let transformers: {
-          env: { allowLocalModels: boolean; useBrowserCache: boolean; remoteHost?: string };
+          env: {
+            allowLocalModels: boolean;
+            allowRemoteModels?: boolean;
+            localModelPath?: string;
+            useBrowserCache: boolean;
+            remoteHost?: string;
+          };
           pipeline: (...args: unknown[]) => Promise<unknown>;
         } | null = null;
         const errors: string[] = [];
@@ -968,9 +974,23 @@ function App() {
         if (!transformers) {
           throw new Error(`Transformers.js не загрузился с доступных CDN: ${errors.at(-1) ?? 'нет ответа'}`);
         }
+        const env = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env;
+        const baseUrl = env?.BASE_URL ?? '/';
         transformers.env.allowLocalModels = false;
         transformers.env.useBrowserCache = true;
         const modelCandidates = ['onnx-community/whisper-tiny', 'Xenova/whisper-tiny'];
+        try {
+          transformers.env.allowLocalModels = true;
+          transformers.env.allowRemoteModels = false;
+          transformers.env.localModelPath = `${baseUrl}models/`;
+          const transcriber = await transformers.pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+            dtype: 'q8'
+          });
+          return transcriber as WhisperTranscriber;
+        } catch (localError) {
+          transformers.env.allowRemoteModels = true;
+          errors.push(`local model: ${localError instanceof Error ? localError.message : String(localError)}`);
+        }
         const modelHosts = ['https://huggingface.co', 'https://hf-mirror.com'];
         const modelErrors: string[] = [];
         for (const host of modelHosts) {
@@ -3200,7 +3220,7 @@ function AIAudioTranscriptionPanel({
   const hasRealAsrResult = values.some((result) => result.engine === 'whisper-browser' || result.engine === 'backend-asr');
   const hasBackendAsr = asrEndpoint.trim().length > 0;
   const statusLabel: Record<AiModelStatus, string> = {
-    idle: 'модель не загружена',
+    idle: hasBackendAsr ? 'backend настроен' : 'локальная модель',
     loading: hasBackendAsr ? 'Backend ASR работает' : 'загрузка Whisper',
     ready: hasBackendAsr ? 'Backend ASR готов' : 'Whisper готов',
     error: 'ошибка модели'
@@ -3233,7 +3253,7 @@ function AIAudioTranscriptionPanel({
       </div>
       <div className="ai-provider-settings">
         <label>
-          <span>Backend ASR URL</span>
+          <span>Backend ASR URL, опционально</span>
           <input
             value={asrEndpoint}
             autoComplete="off"
@@ -3241,7 +3261,7 @@ function AIAudioTranscriptionPanel({
             onChange={(event) => setAsrEndpoint(event.target.value)}
           />
         </label>
-        <Badge tone={hasBackendAsr ? 'info' : 'neutral'}>{hasBackendAsr ? 'Backend ASR включён' : 'браузерный Whisper'}</Badge>
+        <Badge tone={hasBackendAsr ? 'info' : 'neutral'}>{hasBackendAsr ? 'Backend ASR включён' : 'локальный Whisper без ключей'}</Badge>
       </div>
       <div className="ai-transcript-list">
         {segments
