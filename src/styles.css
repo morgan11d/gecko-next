@@ -1109,7 +1109,6 @@ kbd {
   min-width: 0;
 }
 
-.verification-grid,
 .terms-grid,
 .analytics-grid,
 .admin-grid {
@@ -1119,12 +1118,56 @@ kbd {
   align-items: start;
 }
 
+.verification-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.95fr) minmax(360px, 1.2fr) minmax(340px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
 .span-2 {
   grid-column: span 2;
 }
 
+.verification-media-panel {
+  grid-column: span 2;
+}
+
+.verification-video-panel {
+  grid-column: 3;
+}
+
+.verifier-segment-panel,
+.verifier-review-panel,
+.ai-asr-panel,
+.verifier-checklist-panel,
+.verifier-quality-panel {
+  min-height: 0;
+}
+
 .verifier-segment-panel .segment-table {
-  max-height: 260px;
+  max-height: 520px;
+}
+
+.verifier-review-panel .comment-list {
+  max-height: 150px;
+}
+
+.verifier-text-compare {
+  grid-template-columns: 1fr;
+}
+
+.verifier-text-compare div {
+  min-height: 92px;
+}
+
+.ai-asr-panel .ai-transcript-list,
+.verifier-quality-panel .ai-quality-list {
+  max-height: 520px;
+}
+
+.verifier-checklist-panel .checklist {
+  grid-template-columns: 1fr;
 }
 
 .compare-grid {
@@ -1145,6 +1188,14 @@ kbd {
 .compare-grid p {
   margin: 8px 0 0;
   line-height: 1.45;
+}
+
+.verifier-text-compare {
+  grid-template-columns: 1fr;
+}
+
+.verifier-text-compare div {
+  min-height: 92px;
 }
 
 .comment-row,
@@ -1481,6 +1532,13 @@ kbd {
   .editor-panel,
   .qa-panel,
   .ai-panel,
+  .verification-media-panel,
+  .verification-video-panel,
+  .verifier-segment-panel,
+  .verifier-review-panel,
+  .ai-asr-panel,
+  .verifier-checklist-panel,
+  .verifier-quality-panel,
   .span-2 {
     grid-column: 1;
   }

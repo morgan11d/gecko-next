@@ -79,30 +79,14 @@ type AiAudioResult = {
   transcript: string;
   similarity: number;
   level: SegmentQualityLevel;
-  engine: 'browser-asr' | 'gecko-fallback';
+  engine: 'whisper-browser' | 'gecko-fallback';
   detail: string;
   checkedAt: string;
 };
-
-type BrowserSpeechRecognition = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  maxAlternatives: number;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-  onresult: ((event: { results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }> }) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-};
-
-type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
-
-type SpeechWindow = Window & {
-  SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-  webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-};
+type AiModelStatus = 'idle' | 'loading' | 'ready' | 'error';
+type WhisperTranscriber = (audio: Float32Array, options?: Record<string, unknown>) => Promise<string | { text?: string }>;
+type DecodedAudioCache = { url: string; sampleRate: number; samples: Float32Array };
+type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -317,15 +301,39 @@ function textSimilarity(left: string, right: string): number {
   return matches / Math.max(leftWords.length, rightWords.length);
 }
 
-function qualityLevelFromSimilarity(similarity: number, segment: Segment): SegmentQualityLevel {
-  if (!segment.text.trim() || segment.endTime <= segment.startTime || similarity < 0.58) return 'red';
-  if (similarity < 0.82 || segment.confidence < 0.7 || segment.isCrosstalk) return 'yellow';
-  return 'green';
+function audioQualityLevel(segment: Segment, similarity: number, engine: AiAudioResult['engine']): SegmentQualityLevel {
+  if (!segment.text.trim() || segment.endTime <= segment.startTime || similarity < 0.62) return 'red';
+  if (engine === 'whisper-browser') {
+    if (similarity >= 0.86 && segment.confidence >= 0.72 && !segment.isCrosstalk) return 'green';
+    return 'yellow';
+  }
+  if (similarity >= 0.96 && segment.confidence >= 0.9 && !segment.isCrosstalk) return 'yellow';
+  return similarity < 0.78 || segment.confidence < 0.72 ? 'red' : 'yellow';
 }
 
-function getSpeechRecognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
-  const speechWindow = window as SpeechWindow;
-  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+function mixToMono(buffer: AudioBuffer): Float32Array {
+  const length = buffer.length;
+  const mono = new Float32Array(length);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let index = 0; index < length; index += 1) mono[index] += data[index] / buffer.numberOfChannels;
+  }
+  return mono;
+}
+
+function resampleAudio(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (fromRate === toRate) return samples;
+  const ratio = fromRate / toRate;
+  const nextLength = Math.max(1, Math.round(samples.length / ratio));
+  const next = new Float32Array(nextLength);
+  for (let index = 0; index < nextLength; index += 1) {
+    const sourceIndex = index * ratio;
+    const left = Math.floor(sourceIndex);
+    const right = Math.min(samples.length - 1, left + 1);
+    const weight = sourceIndex - left;
+    next[index] = samples[left] * (1 - weight) + samples[right] * weight;
+  }
+  return next;
 }
 
 function App() {
@@ -352,6 +360,8 @@ function App() {
   const [verifierCompareB, setVerifierCompareB] = useState<VerifierCompareFile>(null);
   const [aiAudioResults, setAiAudioResults] = useState<Record<string, AiAudioResult>>({});
   const [aiAudioRunning, setAiAudioRunning] = useState(false);
+  const [aiModelStatus, setAiModelStatus] = useState<AiModelStatus>('idle');
+  const [aiAudioProgress, setAiAudioProgress] = useState('');
   const [undoStack, setUndoStack] = useState<AppState[]>([]);
   const [redoStack, setRedoStack] = useState<AppState[]>([]);
 
@@ -362,6 +372,8 @@ function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playTargetRef = useRef<{ start: number; end: number } | null>(null);
   const playStopTimerRef = useRef<number | null>(null);
+  const whisperRef = useRef<Promise<WhisperTranscriber> | null>(null);
+  const decodedAudioRef = useRef<DecodedAudioCache | null>(null);
   const firstSave = useRef(true);
 
   const currentUser = useMemo(() => state.users.find((user) => user.id === state.currentUserId) ?? null, [state.currentUserId, state.users]);
@@ -748,69 +760,77 @@ function App() {
     clearPlayStopTimer();
   }
 
-  async function transcribeActiveSegmentWithBrowser(segment: Segment): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
-    const Recognition = getSpeechRecognitionConstructor();
-    const fallbackTranscript = segment.sourceText || segment.text;
-    if (!Recognition || !audioUrl) {
-      return {
-        transcript: fallbackTranscript,
-        engine: 'gecko-fallback',
-        detail: 'Браузерный ASR недоступен, использован ASR-текст из Gecko JSON.'
-      };
+  async function getWhisperTranscriber(): Promise<WhisperTranscriber> {
+    if ((window as GeckoTestWindow).__GECKO_TEST_DISABLE_WHISPER) {
+      throw new Error('Whisper отключён только для автотеста');
     }
-
-    return new Promise((resolve) => {
-      let resolved = false;
-      let transcript = '';
-      const recognition = new Recognition();
-      recognition.lang = 'ru-RU';
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-
-      const finish = (engine: AiAudioResult['engine'], detail: string) => {
-        if (resolved) return;
-        resolved = true;
-        try {
-          recognition.stop();
-        } catch {
-          // Recognition can already be stopped by the browser.
-        }
-        pauseMediaAt(segment.endTime);
-        resolve({
-          transcript: transcript.trim() || fallbackTranscript,
-          engine,
-          detail: transcript.trim() ? detail : 'Браузер не вернул текст, использован ASR-текст из Gecko JSON.'
+    if (!whisperRef.current) {
+      setAiModelStatus('loading');
+      whisperRef.current = (async () => {
+        const transformersUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
+        const transformers = await import(/* @vite-ignore */ transformersUrl);
+        transformers.env.allowLocalModels = false;
+        transformers.env.useBrowserCache = true;
+        const transcriber = await transformers.pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+          dtype: 'q8'
         });
-      };
+        return transcriber as WhisperTranscriber;
+      })();
+    }
+    try {
+      const transcriber = await whisperRef.current;
+      setAiModelStatus('ready');
+      return transcriber;
+    } catch (error) {
+      whisperRef.current = null;
+      setAiModelStatus('error');
+      throw error;
+    }
+  }
 
-      recognition.onresult = (event) => {
-        transcript = Array.from(event.results)
-          .map((result) => result[0]?.transcript ?? '')
-          .join(' ')
-          .trim();
+  async function getDecodedAudio(): Promise<DecodedAudioCache> {
+    if (!audioUrl) throw new Error('Сначала загрузите аудио или видео с аудиодорожкой');
+    if (decodedAudioRef.current?.url === audioUrl) return decodedAudioRef.current;
+    const response = await fetch(audioUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioContext = new AudioContext();
+    try {
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+      const decoded = {
+        url: audioUrl,
+        sampleRate: audioBuffer.sampleRate,
+        samples: mixToMono(audioBuffer)
       };
-      recognition.onerror = () => finish('gecko-fallback', 'Распознавание речи недоступно для этого браузера/разрешений.');
-      recognition.onend = () => {
-        if (!resolved && transcript.trim()) finish('browser-asr', 'Текст получен встроенным браузерным ASR при прослушивании сегмента.');
-      };
+      decodedAudioRef.current = decoded;
+      return decoded;
+    } finally {
+      void audioContext.close();
+    }
+  }
 
-      try {
-        recognition.start();
-        const start = Math.max(0, segment.startTime);
-        const end = Math.max(start + 0.05, segment.endTime);
-        seekTo(start);
-        syncVideo(start);
-        wavesurferRef.current?.play();
-        if (!wavesurferRef.current && audioRef.current) {
-          audioRef.current.currentTime = start;
-          audioRef.current.play().catch(() => undefined);
-        }
-        window.setTimeout(() => finish(transcript.trim() ? 'browser-asr' : 'gecko-fallback', 'Сегмент прослушан AI-ASR модулем.'), Math.min(9000, Math.max(900, (end - start) * 1000 + 650)));
-      } catch {
-        finish('gecko-fallback', 'Браузер заблокировал запуск ASR, использован Gecko ASR fallback.');
-      }
+  async function getSegmentAudioSamples(segment: Segment): Promise<Float32Array> {
+    const decoded = await getDecodedAudio();
+    const startIndex = Math.max(0, Math.floor(segment.startTime * decoded.sampleRate));
+    const endIndex = Math.min(decoded.samples.length, Math.ceil(segment.endTime * decoded.sampleRate));
+    const segmentSamples = decoded.samples.slice(startIndex, Math.max(startIndex + 1, endIndex));
+    return resampleAudio(segmentSamples, decoded.sampleRate, 16000);
+  }
+
+  async function transcribeSegmentWithWhisper(segment: Segment): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    const transcriber = await getWhisperTranscriber();
+    const samples = await getSegmentAudioSamples(segment);
+    const result = await transcriber(samples, {
+      language: 'russian',
+      task: 'transcribe',
+      chunk_length_s: 20,
+      stride_length_s: 2
     });
+    const text = typeof result === 'string' ? result : result.text ?? '';
+    return {
+      transcript: text.trim(),
+      engine: 'whisper-browser',
+      detail: 'Текст распознан из аудио сегмента моделью Whisper в браузере.'
+    };
   }
 
   function buildAiAudioResult(segment: Segment, transcript: string, engine: AiAudioResult['engine'], detail: string): AiAudioResult {
@@ -819,7 +839,7 @@ function App() {
       segmentId: segment.id,
       transcript,
       similarity,
-      level: qualityLevelFromSimilarity(similarity, segment),
+      level: audioQualityLevel(segment, similarity, engine),
       engine,
       detail,
       checkedAt: new Date().toISOString()
@@ -834,36 +854,37 @@ function App() {
     }
 
     setAiAudioRunning(true);
-    announce(scope === 'active' ? 'AI слушает активный сегмент' : 'AI проверяет все сегменты');
+    setAiAudioProgress('');
+    announce(scope === 'active' ? 'Whisper распознаёт активный сегмент' : 'Whisper распознаёт сегменты');
     try {
-      if (scope === 'active') {
-        const target = targets[0];
-        const transcript = await transcribeActiveSegmentWithBrowser(target);
-        setAiAudioResults((previous) => ({
-          ...previous,
-          [target.id]: buildAiAudioResult(target, transcript.transcript, transcript.engine, transcript.detail)
-        }));
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        setAiAudioProgress(`${index + 1}/${targets.length} · ${target.id}`);
+        try {
+          const transcript = await transcribeSegmentWithWhisper(target);
+          setAiAudioResults((previous) => ({
+            ...previous,
+            [target.id]: buildAiAudioResult(target, transcript.transcript, transcript.engine, transcript.detail)
+          }));
+        } catch (error) {
+          const fallbackText = target.sourceText || '';
+          const detail = error instanceof Error ? error.message : 'Whisper не смог распознать сегмент';
+          setAiAudioResults((previous) => ({
+            ...previous,
+            [target.id]: buildAiAudioResult(
+              target,
+              fallbackText,
+              'gecko-fallback',
+              `Whisper недоступен: ${detail}. Это не считается настоящим AI-распознаванием.`
+            )
+          }));
+        }
         markSegmentListened(target.id, target.endTime);
-      } else {
-        const nextResults = Object.fromEntries(
-          targets.map((segment) => {
-            const transcript = segment.sourceText || segment.text;
-            return [
-              segment.id,
-              buildAiAudioResult(
-                segment,
-                transcript,
-                'gecko-fallback',
-                'Массовая AI-проверка построила текст по сегменту из Gecko ASR fallback и сравнила его с текущей разметкой.'
-              )
-            ];
-          })
-        );
-        setAiAudioResults((previous) => ({ ...previous, ...nextResults }));
       }
-      announce('AI-проверка качества завершена');
+      announce('Whisper-проверка качества завершена');
     } finally {
       setAiAudioRunning(false);
+      setAiAudioProgress('');
     }
   }
 
@@ -1481,6 +1502,8 @@ function App() {
               onCompareUpload={handleVerifierCompareUpload}
               aiAudioResults={aiAudioResults}
               aiAudioRunning={aiAudioRunning}
+              aiModelStatus={aiModelStatus}
+              aiAudioProgress={aiAudioProgress}
               runAiAudioAudit={runAiAudioAudit}
             />
           )}
@@ -2302,6 +2325,8 @@ function VerificationView(props: {
   onCompareUpload: (side: 'a' | 'b', file?: File) => void;
   aiAudioResults: Record<string, AiAudioResult>;
   aiAudioRunning: boolean;
+  aiModelStatus: AiModelStatus;
+  aiAudioProgress: string;
   runAiAudioAudit: (scope: 'active' | 'all') => void;
 }) {
   const {
@@ -2346,12 +2371,14 @@ function VerificationView(props: {
     onCompareUpload,
     aiAudioResults,
     aiAudioRunning,
+    aiModelStatus,
+    aiAudioProgress,
     runAiAudioAudit
   } = props;
 
   return (
     <div className="verification-grid">
-      <section className="panel media-panel span-2">
+      <section className="panel media-panel verification-media-panel">
         <div className="panel-header">
           <div>
             <span className="section-title">Медиаплеер верификатора</span>
@@ -2420,7 +2447,7 @@ function VerificationView(props: {
         </div>
       </section>
 
-      <section className="panel video-panel">
+      <section className="panel video-panel verification-video-panel">
         <div className="panel-header tight">
           <span className="section-title">Видео верификатора</span>
           <Badge tone={videoUrl ? 'good' : 'neutral'}>{videoUrl ? 'Синхронно' : 'Опционально'}</Badge>
@@ -2435,10 +2462,27 @@ function VerificationView(props: {
         )}
       </section>
 
+      <section className="panel verifier-segment-panel">
+        <div className="panel-header tight">
+          <div>
+            <span className="section-title">Выбор сегмента</span>
+            <h2>{activeSegment ? `${activeSegment.id} · ${formatTime(activeSegment.startTime)} - ${formatTime(activeSegment.endTime)}` : 'Выберите фрагмент'}</h2>
+          </div>
+          <Badge tone="info">{state.segments.length} сегм.</Badge>
+        </div>
+        <SegmentTable
+          segments={state.segments}
+          speakers={state.speakers}
+          activeId={activeSegment?.id}
+          checks={checks}
+          onSelect={selectSegmentOnTimeline}
+        />
+      </section>
+
       <section className="panel verifier-review-panel">
         <div className="panel-header">
           <div>
-            <span className="section-title">Кабинет верификатора</span>
+            <span className="section-title">Проверка активного сегмента</span>
             <h2>{state.task.status}</h2>
           </div>
           <div className="toolbar">
@@ -2457,7 +2501,7 @@ function VerificationView(props: {
           </div>
         </div>
 
-        <div className="compare-grid">
+        <div className="compare-grid verifier-text-compare">
           <div>
             <span className="section-title">Предразметка</span>
             <p>{activeSegment?.sourceText}</p>
@@ -2493,23 +2537,6 @@ function VerificationView(props: {
         </div>
       </section>
 
-      <section className="panel verifier-segment-panel">
-        <div className="panel-header tight">
-          <div>
-            <span className="section-title">Выбор сегмента</span>
-            <h2>{activeSegment ? `${activeSegment.id} · ${formatTime(activeSegment.startTime)} - ${formatTime(activeSegment.endTime)}` : 'Выберите фрагмент'}</h2>
-          </div>
-          <Badge tone="info">{state.segments.length} сегм.</Badge>
-        </div>
-        <SegmentTable
-          segments={state.segments}
-          speakers={state.speakers}
-          activeId={activeSegment?.id}
-          checks={checks}
-          onSelect={selectSegmentOnTimeline}
-        />
-      </section>
-
       <section className="panel ai-asr-panel">
         <AIAudioTranscriptionPanel
           segments={state.segments}
@@ -2517,12 +2544,14 @@ function VerificationView(props: {
           speakers={state.speakers}
           results={aiAudioResults}
           running={aiAudioRunning}
+          modelStatus={aiModelStatus}
+          progress={aiAudioProgress}
           onRun={runAiAudioAudit}
           onSelect={selectSegmentOnTimeline}
         />
       </section>
 
-      <section className="panel">
+      <section className="panel verifier-checklist-panel">
         <div className="panel-header tight">
           <span className="section-title">Чек-лист верификатора</span>
           <Badge tone="info">{state.verifierChecklist.filter((item) => item.done).length}/{state.verifierChecklist.length}</Badge>
@@ -2536,7 +2565,7 @@ function VerificationView(props: {
         />
       </section>
 
-      <section className="panel">
+      <section className="panel verifier-quality-panel">
         <AIQualitySegments segments={state.segments} checks={checks} audioResults={aiAudioResults} speakers={state.speakers} onSelect={(segment) => selectSegmentOnTimeline(segment)} />
       </section>
 
@@ -2571,6 +2600,8 @@ function AIAudioTranscriptionPanel({
   speakers,
   results,
   running,
+  modelStatus,
+  progress,
   onRun,
   onSelect
 }: {
@@ -2579,6 +2610,8 @@ function AIAudioTranscriptionPanel({
   speakers: AppState['speakers'];
   results: Record<string, AiAudioResult>;
   running: boolean;
+  modelStatus: AiModelStatus;
+  progress: string;
   onRun: (scope: 'active' | 'all') => void;
   onSelect: (segment: Segment) => void;
 }) {
@@ -2591,13 +2624,20 @@ function AIAudioTranscriptionPanel({
     },
     { green: 0, yellow: 0, red: 0 }
   );
+  const hasWhisperResult = values.some((result) => result.engine === 'whisper-browser');
+  const statusLabel: Record<AiModelStatus, string> = {
+    idle: 'модель не загружена',
+    loading: 'загрузка Whisper',
+    ready: 'Whisper готов',
+    error: 'ошибка модели'
+  };
 
   return (
     <>
       <div className="panel-header">
         <div>
           <span className="section-title">AI-ASR по аудио</span>
-          <h2>{values.length ? `${values.length} сегм. проверено` : 'Построить текст по сегментам'}</h2>
+          <h2>{running ? progress || 'Whisper работает' : values.length ? `${values.length} сегм. проверено` : 'Whisper распознаёт звук'}</h2>
         </div>
         <div className="toolbar">
           <button className="action-button compact" disabled={running || !activeSegment} onClick={() => onRun('active')}>
@@ -2614,7 +2654,8 @@ function AIAudioTranscriptionPanel({
         <Badge tone="good">{summary.green} зелёных</Badge>
         <Badge tone="warning">{summary.yellow} жёлтых</Badge>
         <Badge tone="danger">{summary.red} красных</Badge>
-        <Badge tone={getSpeechRecognitionConstructor() ? 'info' : 'neutral'}>{getSpeechRecognitionConstructor() ? 'browser ASR' : 'Gecko fallback'}</Badge>
+        <Badge tone={modelStatus === 'ready' ? 'info' : modelStatus === 'error' ? 'danger' : 'neutral'}>{statusLabel[modelStatus]}</Badge>
+        <Badge tone={hasWhisperResult ? 'info' : 'neutral'}>{hasWhisperResult ? 'реальный Whisper' : 'нет AI-распознавания'}</Badge>
       </div>
       <div className="ai-transcript-list">
         {segments
@@ -2632,6 +2673,7 @@ function AIAudioTranscriptionPanel({
                   <strong>{segment.id} · {speaker?.displayName ?? segment.speakerId} · {formatTime(segment.startTime)}</strong>
                   <small>AI: {result?.transcript || 'ещё не проверено'}</small>
                   <small>Разметка: {segment.text || 'пустой текст'}</small>
+                  {result && <small>{result.detail}</small>}
                 </span>
                 <span className="ai-score">
                   <Badge tone={meta.tone}>{meta.label}</Badge>

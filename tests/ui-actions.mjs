@@ -49,6 +49,9 @@ assert(termsAfterManual === termsAfterAi + 1, `Manual add term must add one term
 
 await page.getByRole('button', { name: /Верификация/ }).click();
 await page.waitForSelector('.verifier-segment-panel .segment-row', { timeout: 15000 });
+await page.evaluate(() => {
+  window.__GECKO_TEST_DISABLE_WHISPER = true;
+});
 const secondSegmentId = (await page.locator('.verifier-segment-panel .segment-row').nth(1).locator('.segment-id').innerText()).trim();
 await page.locator('.verifier-segment-panel .segment-row').nth(1).click();
 await page.waitForTimeout(200);
@@ -57,6 +60,7 @@ assert(selectedHeading.includes(secondSegmentId.replace('#', 'seg-')) || selecte
 await page.getByRole('button', { name: /Все сегменты/ }).click();
 await page.waitForFunction(() => document.querySelector('.ai-transcript-row .badge.good, .ai-transcript-row .badge.warning, .ai-transcript-row .badge.danger'), null, { timeout: 5000 });
 assert((await page.locator('.ai-transcript-row').count()) > 0, 'AI-ASR panel must render segment-level transcript rows');
+assert((await page.locator('.ai-transcript-row.green').count()) === 0, 'Fallback AI-ASR must not mark segments as green without real browser recognition');
 assert(await page.locator('.verification-grid .ai-quality-list').evaluate((element) => element.scrollHeight >= element.clientHeight), 'Verification AI quality list must be scrollable or constrained');
 
 await page.getByRole('button', { name: /Админ/ }).click();
