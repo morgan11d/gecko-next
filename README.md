@@ -46,6 +46,14 @@ python3 -m venv .venv
 npm run backend:dev
 ```
 
+Для серверного AI-ASR без пользовательских ключей задайте ключ только на backend:
+
+```bash
+OPENAI_API_KEY="sk-..." npm run backend:dev
+```
+
+Frontend по умолчанию ищет локальный ASR backend на `http://127.0.0.1:8000`. Для опубликованного сайта нужен отдельно захощенный backend с этой переменной окружения; пользователи ключ не вводят.
+
 Docker Compose:
 
 ```bash

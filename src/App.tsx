@@ -79,7 +79,7 @@ type AiAudioResult = {
   transcript: string;
   similarity: number;
   level: SegmentQualityLevel;
-  engine: 'whisper-browser' | 'openai-transcribe' | 'gecko-fallback';
+  engine: 'whisper-browser' | 'backend-asr' | 'gecko-fallback';
   detail: string;
   checkedAt: string;
 };
@@ -104,7 +104,7 @@ type GeckoTestWindow = Window & { __GECKO_TEST_DISABLE_WHISPER?: boolean };
 type FfmpegWindow = Window & { FFmpegWASM?: { FFmpeg: new () => FfmpegInstance } };
 const MEDIA_DB_NAME = 'gecko-next-media-cache';
 const MEDIA_STORE_NAME = 'media';
-const OPENAI_KEY_STORAGE = 'gecko-next-openai-api-key';
+const ASR_ENDPOINT_STORAGE = 'gecko-next-asr-endpoint';
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -321,7 +321,7 @@ function textSimilarity(left: string, right: string): number {
 
 function audioQualityLevel(segment: Segment, similarity: number, engine: AiAudioResult['engine']): SegmentQualityLevel {
   if (!segment.text.trim() || segment.endTime <= segment.startTime || similarity < 0.62) return 'red';
-  if (engine === 'whisper-browser' || engine === 'openai-transcribe') {
+  if (engine === 'whisper-browser' || engine === 'backend-asr') {
     if (similarity >= 0.86 && segment.confidence >= 0.72 && !segment.isCrosstalk) return 'green';
     return 'yellow';
   }
@@ -494,6 +494,14 @@ async function loadPatchedFfmpegGlobal(): Promise<{ FFmpeg: new () => FfmpegInst
   return ffmpegWindow.FFmpegWASM;
 }
 
+function getDefaultAsrEndpoint(): string {
+  const stored = sessionStorage.getItem(ASR_ENDPOINT_STORAGE);
+  if (stored !== null) return stored;
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+  if (env?.VITE_ASR_API_URL) return env.VITE_ASR_API_URL;
+  return ['127.0.0.1', 'localhost'].includes(window.location.hostname) ? 'http://127.0.0.1:8000' : '';
+}
+
 function App() {
   const [state, setState] = useState<AppState>(loadInitialState);
   const [activeView, setActiveView] = useState<ViewName>('workspace');
@@ -520,7 +528,7 @@ function App() {
   const [aiAudioRunning, setAiAudioRunning] = useState(false);
   const [aiModelStatus, setAiModelStatus] = useState<AiModelStatus>('idle');
   const [aiAudioProgress, setAiAudioProgress] = useState('');
-  const [openAiApiKey, setOpenAiApiKey] = useState(() => sessionStorage.getItem(OPENAI_KEY_STORAGE) ?? '');
+  const [asrEndpoint, setAsrEndpoint] = useState(getDefaultAsrEndpoint);
   const [undoStack, setUndoStack] = useState<AppState[]>([]);
   const [redoStack, setRedoStack] = useState<AppState[]>([]);
 
@@ -571,10 +579,9 @@ function App() {
     window.setTimeout(() => setToast(''), 2600);
   };
 
-  function updateOpenAiApiKey(value: string) {
-    setOpenAiApiKey(value);
-    if (value.trim()) sessionStorage.setItem(OPENAI_KEY_STORAGE, value.trim());
-    else sessionStorage.removeItem(OPENAI_KEY_STORAGE);
+  function updateAsrEndpoint(value: string) {
+    setAsrEndpoint(value);
+    sessionStorage.setItem(ASR_ENDPOINT_STORAGE, value.trim());
   }
 
   useEffect(() => {
@@ -1321,54 +1328,50 @@ function App() {
     };
   }
 
-  async function transcribeSegmentWithOpenAi(segment: Segment, apiKey: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+  async function transcribeSegmentWithBackendAsr(segment: Segment, endpoint: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    const baseUrl = endpoint.trim().replace(/\/+$/, '');
+    if (!baseUrl) throw new Error('Backend ASR URL не настроен');
     const { samples, source } = await getSegmentAudioSamples(segment);
     const wav = encodeWav(samples, 16000);
     const form = new FormData();
-    form.append('model', 'gpt-4o-mini-transcribe');
-    form.append('language', 'ru');
-    form.append('response_format', 'text');
     form.append('file', new File([wav], `${segment.id}.wav`, { type: 'audio/wav' }));
 
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    const response = await fetch(`${baseUrl}/asr/transcribe`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`
-      },
       body: form
     });
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      throw new Error(`OpenAI ASR ${response.status}: ${errorText.slice(0, 180) || response.statusText}`);
+      throw new Error(`Backend ASR ${response.status}: ${errorText.slice(0, 220) || response.statusText}`);
     }
 
-    const text = await response.text();
+    const payload = await response.json() as { text?: string; engine?: string };
     return {
-      transcript: text.trim(),
-      engine: 'openai-transcribe',
+      transcript: (payload.text ?? '').trim(),
+      engine: 'backend-asr',
       detail: source === 'ffmpeg-extracted'
-        ? 'Текст распознан OpenAI gpt-4o-mini-transcribe из WAV-фрагмента, извлечённого через ffmpeg.wasm.'
+        ? `Текст распознан backend ASR${payload.engine ? ` (${payload.engine})` : ''} из WAV-фрагмента, извлечённого через ffmpeg.wasm.`
         : source === 'recorded-media'
-          ? 'Текст распознан OpenAI gpt-4o-mini-transcribe из записанного аудиофрагмента.'
-          : 'Текст распознан OpenAI gpt-4o-mini-transcribe из аудио сегмента.'
+          ? `Текст распознан backend ASR${payload.engine ? ` (${payload.engine})` : ''} из записанного аудиофрагмента.`
+          : `Текст распознан backend ASR${payload.engine ? ` (${payload.engine})` : ''} из аудио сегмента.`
     };
   }
 
-  async function transcribeSegmentWithAi(segment: Segment, apiKey: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
-    if (apiKey.trim()) {
+  async function transcribeSegmentWithAi(segment: Segment, endpoint: string): Promise<Pick<AiAudioResult, 'transcript' | 'engine' | 'detail'>> {
+    if (endpoint.trim()) {
       try {
-        return await transcribeSegmentWithOpenAi(segment, apiKey.trim());
-      } catch (openAiError) {
+        return await transcribeSegmentWithBackendAsr(segment, endpoint);
+      } catch (backendError) {
         try {
           const whisper = await transcribeSegmentWithWhisper(segment);
           return {
             ...whisper,
-            detail: `${whisper.detail} OpenAI недоступен: ${openAiError instanceof Error ? openAiError.message : String(openAiError)}`
+            detail: `${whisper.detail} Backend ASR недоступен: ${backendError instanceof Error ? backendError.message : String(backendError)}`
           };
         } catch (whisperError) {
           throw new Error(
-            `OpenAI недоступен: ${openAiError instanceof Error ? openAiError.message : String(openAiError)}; ` +
+            `Backend ASR недоступен: ${backendError instanceof Error ? backendError.message : String(backendError)}; ` +
             `Whisper недоступен: ${whisperError instanceof Error ? whisperError.message : String(whisperError)}`
           );
         }
@@ -1401,14 +1404,14 @@ function App() {
     setAiAudioRunning(true);
     setAiAudioProgress('');
     setAiModelStatus('loading');
-    const aiProviderName = openAiApiKey.trim() ? 'OpenAI ASR' : 'Whisper';
+    const aiProviderName = asrEndpoint.trim() ? 'Backend ASR' : 'Whisper';
     announce(scope === 'active' ? `${aiProviderName} распознаёт активный сегмент` : `${aiProviderName} распознаёт сегменты`);
     try {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
         setAiAudioProgress(`${index + 1}/${targets.length} · ${target.id}`);
         try {
-          const transcript = await transcribeSegmentWithAi(target, openAiApiKey);
+          const transcript = await transcribeSegmentWithAi(target, asrEndpoint);
           setAiAudioResults((previous) => ({
             ...previous,
             [target.id]: buildAiAudioResult(target, transcript.transcript, transcript.engine, transcript.detail)
@@ -1428,7 +1431,7 @@ function App() {
         }
         markSegmentListened(target.id, target.endTime);
       }
-      if (openAiApiKey.trim()) setAiModelStatus('ready');
+      if (asrEndpoint.trim()) setAiModelStatus('ready');
       announce('AI-ASR проверка качества завершена');
     } finally {
       setAiAudioRunning(false);
@@ -2062,8 +2065,8 @@ function App() {
               aiAudioRunning={aiAudioRunning}
               aiModelStatus={aiModelStatus}
               aiAudioProgress={aiAudioProgress}
-              openAiApiKey={openAiApiKey}
-              setOpenAiApiKey={updateOpenAiApiKey}
+              asrEndpoint={asrEndpoint}
+              setAsrEndpoint={updateAsrEndpoint}
               runAiAudioAudit={runAiAudioAudit}
             />
           )}
@@ -2887,8 +2890,8 @@ function VerificationView(props: {
   aiAudioRunning: boolean;
   aiModelStatus: AiModelStatus;
   aiAudioProgress: string;
-  openAiApiKey: string;
-  setOpenAiApiKey: (value: string) => void;
+  asrEndpoint: string;
+  setAsrEndpoint: (value: string) => void;
   runAiAudioAudit: (scope: 'active' | 'all') => void;
 }) {
   const {
@@ -2935,8 +2938,8 @@ function VerificationView(props: {
     aiAudioRunning,
     aiModelStatus,
     aiAudioProgress,
-    openAiApiKey,
-    setOpenAiApiKey,
+    asrEndpoint,
+    setAsrEndpoint,
     runAiAudioAudit
   } = props;
 
@@ -3110,8 +3113,8 @@ function VerificationView(props: {
           running={aiAudioRunning}
           modelStatus={aiModelStatus}
           progress={aiAudioProgress}
-          openAiApiKey={openAiApiKey}
-          setOpenAiApiKey={setOpenAiApiKey}
+          asrEndpoint={asrEndpoint}
+          setAsrEndpoint={setAsrEndpoint}
           onRun={runAiAudioAudit}
           onSelect={selectSegmentOnTimeline}
         />
@@ -3168,8 +3171,8 @@ function AIAudioTranscriptionPanel({
   running,
   modelStatus,
   progress,
-  openAiApiKey,
-  setOpenAiApiKey,
+  asrEndpoint,
+  setAsrEndpoint,
   onRun,
   onSelect
 }: {
@@ -3180,8 +3183,8 @@ function AIAudioTranscriptionPanel({
   running: boolean;
   modelStatus: AiModelStatus;
   progress: string;
-  openAiApiKey: string;
-  setOpenAiApiKey: (value: string) => void;
+  asrEndpoint: string;
+  setAsrEndpoint: (value: string) => void;
   onRun: (scope: 'active' | 'all') => void;
   onSelect: (segment: Segment) => void;
 }) {
@@ -3194,12 +3197,12 @@ function AIAudioTranscriptionPanel({
     },
     { green: 0, yellow: 0, red: 0 }
   );
-  const hasRealAsrResult = values.some((result) => result.engine === 'whisper-browser' || result.engine === 'openai-transcribe');
-  const hasOpenAiKey = openAiApiKey.trim().length > 0;
+  const hasRealAsrResult = values.some((result) => result.engine === 'whisper-browser' || result.engine === 'backend-asr');
+  const hasBackendAsr = asrEndpoint.trim().length > 0;
   const statusLabel: Record<AiModelStatus, string> = {
     idle: 'модель не загружена',
-    loading: hasOpenAiKey ? 'OpenAI/Whisper работает' : 'загрузка Whisper',
-    ready: hasOpenAiKey ? 'OpenAI key готов' : 'Whisper готов',
+    loading: hasBackendAsr ? 'Backend ASR работает' : 'загрузка Whisper',
+    ready: hasBackendAsr ? 'Backend ASR готов' : 'Whisper готов',
     error: 'ошибка модели'
   };
 
@@ -3230,16 +3233,15 @@ function AIAudioTranscriptionPanel({
       </div>
       <div className="ai-provider-settings">
         <label>
-          <span>OpenAI API key</span>
+          <span>Backend ASR URL</span>
           <input
-            type="password"
-            value={openAiApiKey}
+            value={asrEndpoint}
             autoComplete="off"
-            placeholder="sk-..."
-            onChange={(event) => setOpenAiApiKey(event.target.value)}
+            placeholder="http://127.0.0.1:8000"
+            onChange={(event) => setAsrEndpoint(event.target.value)}
           />
         </label>
-        <Badge tone={hasOpenAiKey ? 'info' : 'neutral'}>{hasOpenAiKey ? 'OpenAI ASR включён' : 'браузерный Whisper'}</Badge>
+        <Badge tone={hasBackendAsr ? 'info' : 'neutral'}>{hasBackendAsr ? 'Backend ASR включён' : 'браузерный Whisper'}</Badge>
       </div>
       <div className="ai-transcript-list">
         {segments

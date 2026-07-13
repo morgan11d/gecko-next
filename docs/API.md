@@ -31,6 +31,10 @@
 - `GET /media/{id}/waveform` - cached waveform peaks endpoint.
 - `DELETE /media/{id}` - удаление.
 
+## ASR
+
+- `POST /asr/transcribe` - серверное распознавание WAV/аудиофрагмента. Backend берёт `OPENAI_API_KEY` из переменных окружения и возвращает `{ "text": "...", "engine": "gpt-4o-mini-transcribe" }`; ключ не передаётся во frontend.
+
 ## Segments
 
 - `GET /tasks/{task_id}/segments` - сегменты задачи.

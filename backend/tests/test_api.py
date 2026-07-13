@@ -55,3 +55,9 @@ def test_gecko_v2_import_edit_export_roundtrip() -> None:
     assert len(body["monologues"]) == 2
     assert any(term["text"] == "изменённый" for term in body["monologues"][0]["terms"])
 
+
+def test_asr_requires_backend_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = client.post("/asr/transcribe", files={"file": ("segment.wav", b"RIFFdemo", "audio/wav")})
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]

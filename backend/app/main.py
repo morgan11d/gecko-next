@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -175,6 +177,39 @@ def media_waveform(media_id: str, user: User = Depends(get_current_user)) -> dic
     buckets = 120
     peaks = [round(((index % 12) / 12) * 0.8 + 0.1, 3) for index in range(buckets)]
     return {"media_id": media_id, "duration": duration, "buckets": buckets, "peaks": peaks, "cached": True}
+
+
+@app.post("/asr/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)) -> dict[str, str]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OPENAI_API_KEY is not configured on backend",
+        )
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Audio file is empty")
+
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                data={"model": "gpt-4o-mini-transcribe", "language": "ru", "response_format": "text"},
+                files={"file": (file.filename or "segment.wav", audio_bytes, file.content_type or "audio/wav")},
+            )
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ASR provider is unavailable: {error}") from error
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"ASR provider error {response.status_code}: {response.text[:400]}",
+        )
+
+    return {"text": response.text.strip(), "engine": "gpt-4o-mini-transcribe"}
 
 
 @app.post("/tasks/{task_id}/import/gecko-v2", response_model=ImportResult)
