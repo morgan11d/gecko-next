@@ -180,6 +180,7 @@ export interface AppState {
   auditLog: AuditLogEntry[];
   versions: TranscriptVersion[];
   sourceSchemaVersion?: string;
+  checklistPresetVersion?: string;
   version: number;
   savedAt: string;
 }

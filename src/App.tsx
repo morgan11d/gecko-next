@@ -105,6 +105,7 @@ type FfmpegWindow = Window & { FFmpegWASM?: { FFmpeg: new () => FfmpegInstance }
 const MEDIA_DB_NAME = 'gecko-next-media-cache';
 const MEDIA_STORE_NAME = 'media';
 const ASR_ENDPOINT_STORAGE = 'gecko-next-asr-endpoint';
+const CHECKLIST_PRESET_VERSION = 'tz-6-11-v1';
 
 const roleViews: Record<RoleName, ViewName[]> = {
   annotator: ['workspace', 'terms', 'analytics'],
@@ -130,6 +131,7 @@ function normalizeChecklist(items: ChecklistItem[] | undefined, preset: Checklis
 function migrateState(candidate: Partial<AppState>): AppState {
   const base = createEmptyState();
   const migrated = { ...base, ...candidate } as AppState;
+  const shouldApplyChecklistPreset = migrated.checklistPresetVersion !== CHECKLIST_PRESET_VERSION;
   return {
     ...migrated,
     currentUserId: migrated.users.some((user) => user.id === migrated.currentUserId && user.status === 'active') ? migrated.currentUserId : null,
@@ -137,8 +139,17 @@ function migrateState(candidate: Partial<AppState>): AppState {
       ...user,
       role: roleOptions.includes(user.role) ? user.role : 'annotator'
     })),
-    annotatorChecklist: normalizeChecklist(migrated.annotatorChecklist, annotatorChecklistPreset),
-    verifierChecklist: normalizeChecklist(migrated.verifierChecklist, verifierChecklistPreset),
+    annotatorChecklist: shouldApplyChecklistPreset
+      ? normalizeChecklist(migrated.annotatorChecklist, annotatorChecklistPreset)
+      : Array.isArray(migrated.annotatorChecklist)
+        ? migrated.annotatorChecklist
+        : base.annotatorChecklist,
+    verifierChecklist: shouldApplyChecklistPreset
+      ? normalizeChecklist(migrated.verifierChecklist, verifierChecklistPreset)
+      : Array.isArray(migrated.verifierChecklist)
+        ? migrated.verifierChecklist
+        : base.verifierChecklist,
+    checklistPresetVersion: CHECKLIST_PRESET_VERSION,
     versions: Array.isArray(migrated.versions) ? migrated.versions : base.versions
   };
 }
@@ -169,6 +180,7 @@ function createEmptyState(): AppState {
     auditLog: [],
     versions: [],
     sourceSchemaVersion: undefined,
+    checklistPresetVersion: CHECKLIST_PRESET_VERSION,
     savedAt: new Date().toISOString()
   };
 }
@@ -558,6 +570,7 @@ function App() {
   const ffmpegRef = useRef<Promise<FfmpegInstance> | null>(null);
   const decodedAudioRef = useRef<DecodedAudioCache | null>(null);
   const firstSave = useRef(true);
+  const checklistRuntimeMigrationRef = useRef(false);
 
   const currentUser = useMemo(() => state.users.find((user) => user.id === state.currentUserId) ?? null, [state.currentUserId, state.users]);
   const activeSegment = useMemo(
@@ -599,6 +612,21 @@ function App() {
 
   useEffect(() => {
     stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    if (checklistRuntimeMigrationRef.current || state.checklistPresetVersion === CHECKLIST_PRESET_VERSION) return;
+    checklistRuntimeMigrationRef.current = true;
+    const next: AppState = {
+      ...state,
+      annotatorChecklist: normalizeChecklist(state.annotatorChecklist, annotatorChecklistPreset),
+      verifierChecklist: normalizeChecklist(state.verifierChecklist, verifierChecklistPreset),
+      checklistPresetVersion: CHECKLIST_PRESET_VERSION,
+      savedAt: new Date().toISOString()
+    };
+    stateRef.current = next;
+    setState(next);
+    setSaveState('dirty');
   }, [state]);
 
   useEffect(() => {
