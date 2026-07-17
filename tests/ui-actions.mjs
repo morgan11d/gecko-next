@@ -42,6 +42,10 @@ for (const label of [
 assert((await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').count()) === 0, 'Checklist items must render as text until edit mode is opened');
 await page.locator('.checklist-panel .check-item').first().getByRole('button', { name: 'Редактировать пункт' }).click();
 await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').waitFor({ timeout: 5000 });
+assert(
+  await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').evaluate((input) => document.activeElement === input),
+  'Checklist edit field must receive focus after clicking edit'
+);
 await page.locator('.checklist-panel .check-item').first().getByRole('button', { name: 'Отменить' }).click();
 
 const initialTerms = await page.evaluate(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}').terms?.length ?? 0);

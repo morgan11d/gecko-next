@@ -3793,6 +3793,13 @@ function Checklist({
   const [draft, setDraft] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState('');
+  const editingInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editingId) return;
+    editingInputRef.current?.focus();
+    editingInputRef.current?.select();
+  }, [editingId]);
 
   function startEditing(item: ChecklistItem) {
     setEditingId(item.id);
@@ -3819,6 +3826,7 @@ function Checklist({
           <div key={item.id} className="check-item editing">
             <input type="checkbox" checked={item.done} onChange={(event) => onToggle(item.id, event.target.checked)} />
             <input
+              ref={editingInputRef}
               value={editingDraft}
               onChange={(event) => setEditingDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -3838,7 +3846,7 @@ function Checklist({
           </div>
         ) : (
           <div key={item.id} className="check-item">
-            <label className="check-item-main">
+            <label className="check-item-main" onDoubleClick={() => startEditing(item)} title="Двойной клик для редактирования">
               <input type="checkbox" checked={item.done} onChange={(event) => onToggle(item.id, event.target.checked)} />
               <span>{item.label}</span>
             </label>
