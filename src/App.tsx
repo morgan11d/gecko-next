@@ -47,7 +47,7 @@ import {
   X
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { demoState } from './demoState';
+import { annotatorChecklistPreset, demoState, verifierChecklistPreset } from './demoState';
 import {
   STORAGE_KEY,
   addAudit,
@@ -116,6 +116,17 @@ const roleViews: Record<RoleName, ViewName[]> = {
 const roleOptions: RoleName[] = ['annotator', 'verifier', 'supervisor', 'admin'];
 const taskStatusOptions: TaskStatus[] = ['Новая', 'Назначена', 'В работе', 'На проверке', 'На доработке', 'Исправлена', 'Принята', 'Выгружена'];
 
+function normalizeChecklist(items: ChecklistItem[] | undefined, preset: ChecklistItem[]): ChecklistItem[] {
+  const existing = new Map((Array.isArray(items) ? items : []).map((item) => [item.id, item]));
+  const presetIds = new Set(preset.map((item) => item.id));
+  const normalized = preset.map((item) => ({
+    ...item,
+    done: existing.get(item.id)?.done ?? item.done
+  }));
+  const customItems = (Array.isArray(items) ? items : []).filter((item) => !presetIds.has(item.id));
+  return [...normalized, ...customItems];
+}
+
 function migrateState(candidate: Partial<AppState>): AppState {
   const base = createEmptyState();
   const migrated = { ...base, ...candidate } as AppState;
@@ -126,6 +137,8 @@ function migrateState(candidate: Partial<AppState>): AppState {
       ...user,
       role: roleOptions.includes(user.role) ? user.role : 'annotator'
     })),
+    annotatorChecklist: normalizeChecklist(migrated.annotatorChecklist, annotatorChecklistPreset),
+    verifierChecklist: normalizeChecklist(migrated.verifierChecklist, verifierChecklistPreset),
     versions: Array.isArray(migrated.versions) ? migrated.versions : base.versions
   };
 }

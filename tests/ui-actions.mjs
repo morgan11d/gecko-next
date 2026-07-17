@@ -23,6 +23,23 @@ await page.locator('label.file-button:has-text("Аннотация") input[type=
 await page.waitForSelector('.segment-row', { timeout: 20000 });
 await page.waitForTimeout(1200);
 
+const annotatorChecklistLabels = await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').evaluateAll((inputs) => inputs.map((input) => input.value));
+for (const label of [
+  'Запись прослушана до конца',
+  'Все сегменты проверены',
+  'Границы сегментов исправлены',
+  'Обрезанные слова проверены',
+  'Пропущенная речь добавлена',
+  'Некорректная разметка удалена',
+  'Кросстолки обработаны',
+  'Значимые короткие реплики добавлены',
+  'Термины проверены',
+  'Спорные термины зафиксированы',
+  'Несохранённых изменений нет'
+]) {
+  assert(annotatorChecklistLabels.includes(label), `Annotator checklist must include TZ item: ${label}`);
+}
+
 const initialTerms = await page.evaluate(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}').terms?.length ?? 0);
 const aiAddButton = page.locator('.hint-row', { hasText: 'Добавить термин' }).first();
 await aiAddButton.waitFor({ timeout: 15000 });
@@ -49,6 +66,19 @@ assert(termsAfterManual === termsAfterAi + 1, `Manual add term must add one term
 
 await page.getByRole('button', { name: /Верификация/ }).click();
 await page.waitForSelector('.verifier-segment-panel .segment-row', { timeout: 15000 });
+const verifierChecklistLabels = await page.locator('.verifier-checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').evaluateAll((inputs) => inputs.map((input) => input.value));
+for (const label of [
+  'Соответствие текста аудио',
+  'Корректность границ',
+  'Наличие пропущенной речи',
+  'Корректность терминов',
+  'Соблюдение правил текста',
+  'Корректность обработки кросстолков',
+  'Отсутствие пустых и ошибочных сегментов',
+  'Обработка замечаний после возврата'
+]) {
+  assert(verifierChecklistLabels.includes(label), `Verifier checklist must include TZ item: ${label}`);
+}
 await page.evaluate(() => {
   window.__GECKO_TEST_DISABLE_WHISPER = true;
 });

@@ -1,4 +1,29 @@
-import type { AppState } from './types';
+import type { AppState, ChecklistItem } from './types';
+
+export const annotatorChecklistPreset: ChecklistItem[] = [
+  { id: 'listened', label: 'Запись прослушана до конца', done: false },
+  { id: 'segments', label: 'Все сегменты проверены', done: false },
+  { id: 'boundaries', label: 'Границы сегментов исправлены', done: false },
+  { id: 'cutWords', label: 'Обрезанные слова проверены', done: false },
+  { id: 'missingSpeech', label: 'Пропущенная речь добавлена', done: false },
+  { id: 'badMarkup', label: 'Некорректная разметка удалена', done: false },
+  { id: 'crosstalk', label: 'Кросстолки обработаны', done: false },
+  { id: 'shortReplies', label: 'Значимые короткие реплики добавлены', done: false },
+  { id: 'terms', label: 'Термины проверены', done: false },
+  { id: 'disputedTerms', label: 'Спорные термины зафиксированы', done: false },
+  { id: 'saved', label: 'Несохранённых изменений нет', done: false }
+];
+
+export const verifierChecklistPreset: ChecklistItem[] = [
+  { id: 'matchAudio', label: 'Соответствие текста аудио', done: false },
+  { id: 'boundaries', label: 'Корректность границ', done: false },
+  { id: 'missingSpeech', label: 'Наличие пропущенной речи', done: false },
+  { id: 'terms', label: 'Корректность терминов', done: false },
+  { id: 'rules', label: 'Соблюдение правил текста', done: false },
+  { id: 'crosstalk', label: 'Корректность обработки кросстолков', done: false },
+  { id: 'empty', label: 'Отсутствие пустых и ошибочных сегментов', done: false },
+  { id: 'returns', label: 'Обработка замечаний после возврата', done: false }
+];
 
 export const demoState: AppState = {
   users: [
@@ -236,28 +261,8 @@ export const demoState: AppState = {
       createdAt: '2026-07-10T10:14:00+03:00'
     }
   ],
-  annotatorChecklist: [
-    { id: 'listened', label: 'Запись прослушана до конца', done: false },
-    { id: 'segments', label: 'Все сегменты проверены', done: false },
-    { id: 'boundaries', label: 'Границы сегментов исправлены', done: false },
-    { id: 'cutWords', label: 'Обрезанные слова проверены', done: false },
-    { id: 'missingSpeech', label: 'Пропущенная речь добавлена', done: false },
-    { id: 'badMarkup', label: 'Некорректная разметка удалена', done: false },
-    { id: 'crosstalk', label: 'Кросстолки обработаны', done: false },
-    { id: 'shortReplies', label: 'Значимые короткие реплики сохранены', done: false },
-    { id: 'terms', label: 'Термины проверены', done: false },
-    { id: 'disputedTerms', label: 'Спорные термины зафиксированы', done: false },
-    { id: 'saved', label: 'Несохранённых изменений нет', done: false }
-  ],
-  verifierChecklist: [
-    { id: 'matchAudio', label: 'Текст соответствует аудио', done: false },
-    { id: 'boundaries', label: 'Границы корректны', done: false },
-    { id: 'terms', label: 'Термины корректны', done: false },
-    { id: 'rules', label: 'Правила текста соблюдены', done: false },
-    { id: 'crosstalk', label: 'Кросстолки обработаны корректно', done: false },
-    { id: 'empty', label: 'Пустых и ошибочных сегментов нет', done: false },
-    { id: 'returns', label: 'Замечания после возврата обработаны', done: false }
-  ],
+  annotatorChecklist: annotatorChecklistPreset,
+  verifierChecklist: verifierChecklistPreset,
   history: [
     {
       id: 'hist-1',
