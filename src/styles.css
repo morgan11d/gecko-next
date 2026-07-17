@@ -968,6 +968,7 @@ kbd {
 .check-item {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-height: 36px;
   color: var(--text);
@@ -975,17 +976,44 @@ kbd {
   font-weight: 700;
 }
 
-.check-item.editable {
+.check-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.check-item-main span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.check-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.check-item-actions .icon-button {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+}
+
+.check-item.editing {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 38px;
-  padding: 7px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 6px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #f8fafb;
 }
 
-.check-item.editable input[type="text"],
-.check-item.editable input:not([type]) {
+.check-item.editing input[type="text"],
+.check-item.editing input:not([type]) {
   min-height: 32px;
 }
 

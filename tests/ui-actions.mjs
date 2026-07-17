@@ -23,7 +23,7 @@ await page.locator('label.file-button:has-text("Аннотация") input[type=
 await page.waitForSelector('.segment-row', { timeout: 20000 });
 await page.waitForTimeout(1200);
 
-const annotatorChecklistLabels = await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').evaluateAll((inputs) => inputs.map((input) => input.value));
+const annotatorChecklistLabels = await page.locator('.checklist-panel .check-item-main span').evaluateAll((items) => items.map((item) => item.textContent?.trim() ?? ''));
 for (const label of [
   'Запись прослушана до конца',
   'Все сегменты проверены',
@@ -39,6 +39,10 @@ for (const label of [
 ]) {
   assert(annotatorChecklistLabels.includes(label), `Annotator checklist must include TZ item: ${label}`);
 }
+assert((await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').count()) === 0, 'Checklist items must render as text until edit mode is opened');
+await page.locator('.checklist-panel .check-item').first().getByRole('button', { name: 'Редактировать пункт' }).click();
+await page.locator('.checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').waitFor({ timeout: 5000 });
+await page.locator('.checklist-panel .check-item').first().getByRole('button', { name: 'Отменить' }).click();
 
 const initialTerms = await page.evaluate(() => JSON.parse(localStorage.getItem('gecko-next-mvp-state') || '{}').terms?.length ?? 0);
 const aiAddButton = page.locator('.hint-row', { hasText: 'Добавить термин' }).first();
@@ -66,7 +70,7 @@ assert(termsAfterManual === termsAfterAi + 1, `Manual add term must add one term
 
 await page.getByRole('button', { name: /Верификация/ }).click();
 await page.waitForSelector('.verifier-segment-panel .segment-row', { timeout: 15000 });
-const verifierChecklistLabels = await page.locator('.verifier-checklist-panel .check-item input[aria-label="Текст пункта чек-листа"]').evaluateAll((inputs) => inputs.map((input) => input.value));
+const verifierChecklistLabels = await page.locator('.verifier-checklist-panel .check-item-main span').evaluateAll((items) => items.map((item) => item.textContent?.trim() ?? ''));
 for (const label of [
   'Соответствие текста аудио',
   'Корректность границ',

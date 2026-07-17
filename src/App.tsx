@@ -24,6 +24,7 @@ import {
   MessageSquare,
   Mic2,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCcw,
@@ -3790,18 +3791,68 @@ function Checklist({
   onDelete: (id: string) => void;
 }) {
   const [draft, setDraft] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState('');
+
+  function startEditing(item: ChecklistItem) {
+    setEditingId(item.id);
+    setEditingDraft(item.label);
+  }
+
+  function saveEditing() {
+    if (!editingId) return;
+    const nextLabel = editingDraft.trim();
+    if (nextLabel) onRename(editingId, nextLabel);
+    setEditingId(null);
+    setEditingDraft('');
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setEditingDraft('');
+  }
 
   return (
     <div className="checklist">
-      {items.map((item) => (
-        <div key={item.id} className="check-item editable">
-          <input type="checkbox" checked={item.done} onChange={(event) => onToggle(item.id, event.target.checked)} />
-          <input value={item.label} onChange={(event) => onRename(item.id, event.target.value)} aria-label="Текст пункта чек-листа" />
-          <button type="button" className="icon-button" onClick={() => onDelete(item.id)} title="Удалить пункт" aria-label="Удалить пункт">
-            <Trash2 {...iconSize(15)} />
-          </button>
-        </div>
-      ))}
+      {items.map((item) =>
+        editingId === item.id ? (
+          <div key={item.id} className="check-item editing">
+            <input type="checkbox" checked={item.done} onChange={(event) => onToggle(item.id, event.target.checked)} />
+            <input
+              value={editingDraft}
+              onChange={(event) => setEditingDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') saveEditing();
+                if (event.key === 'Escape') cancelEditing();
+              }}
+              aria-label="Текст пункта чек-листа"
+            />
+            <div className="check-item-actions">
+              <button type="button" className="icon-button" onClick={saveEditing} title="Сохранить пункт" aria-label="Сохранить пункт" disabled={!editingDraft.trim()}>
+                <Check {...iconSize(15)} />
+              </button>
+              <button type="button" className="icon-button" onClick={cancelEditing} title="Отменить" aria-label="Отменить">
+                <X {...iconSize(15)} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div key={item.id} className="check-item">
+            <label className="check-item-main">
+              <input type="checkbox" checked={item.done} onChange={(event) => onToggle(item.id, event.target.checked)} />
+              <span>{item.label}</span>
+            </label>
+            <div className="check-item-actions">
+              <button type="button" className="icon-button" onClick={() => startEditing(item)} title="Редактировать пункт" aria-label="Редактировать пункт">
+                <Pencil {...iconSize(15)} />
+              </button>
+              <button type="button" className="icon-button" onClick={() => onDelete(item.id)} title="Удалить пункт" aria-label="Удалить пункт">
+                <Trash2 {...iconSize(15)} />
+              </button>
+            </div>
+          </div>
+        )
+      )}
       <div className="checklist-add">
         <input
           value={draft}
